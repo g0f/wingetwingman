@@ -1,7 +1,7 @@
 # WingetWingman
 
 ## Overview
-**WingetWingman** is a lightweight deployment solution that leverages **[PSAppDeployToolkit](https://github.com/PSAppDeployToolkit/PSAppDeployToolkit)**, **[PSAppDeployToolkit.WinGet](https://github.com/mjr4077au/PSAppDeployToolkit.WinGet/)** by [mjr4077au](https://github.com/mjr4077au), and scripts by **winget-install** by [Romanitho](https://github.com/Romanitho). It allows for quick and easy deployment of standard applications that require no customization, such as **7-Zip**. Additionally, it includes an optional **auto-update** feature that schedules weekly updates for the application.
+**WingetWingman** is a lightweight deployment solution that leverages **[PSAppDeployToolkit](https://github.com/PSAppDeployToolkit/PSAppDeployToolkit)**, **[PSAppDeployToolkit.WinGet](https://github.com/mjr4077au/PSAppDeployToolkit.WinGet/)** by [mjr4077au](https://github.com/mjr4077au), and scripts from **winget-install** by [Romanitho](https://github.com/Romanitho). It allows for quick and easy deployment of standard applications that require no customization, such as **7-Zip**. Additionally, it includes an optional **auto-update** feature that schedules weekly updates for the application.
 
 ## Features
 - **Simple Deployment**: Easily install applications using `winget` via **PSADT**. A single intunewin file is needed and you only need to customize the install command.
