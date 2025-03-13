@@ -15,20 +15,17 @@ Modify the detection script variable `$AppToDetect` to match the application you
 ### 2. Deploy via Intune
 To deploy WingetWingman via Microsoft Intune, follow these steps:
 
-#### Step 1: Prepare the Installation Package
-1. Download and configure **PSADT** and **WingetWingman**.
-2. Place all required files (including `Invoke-AppDeployToolkit.exe` and `Deploy-Application.ps1`) into a single folder.
-3. Compress the folder into a `.zip` file.
-
-#### Step 2: Upload to Intune
+#### Step 1: Upload the `.intunewin` File
 1. Sign in to **Microsoft Intune admin center**.
 2. Navigate to **Apps** > **Windows** > **Add**.
 3. Select **Windows app (Win32)** as the **app type**.
-4. Click **Select** and upload the `.zip` package you created.
-5. Configure the **App Information**:
-   - Enter an appropriate **name**, **description**, and **publisher**.
-   - (Optional) To find a suitable app icon, use [Aaron Parker's icon repository](https://github.com/aaronparker/icons).
-6. Click **Next**.
+4. Click **Select** and upload the provided `.intunewin` file.
+5. Click **Next**.
+
+#### Step 2: Configure App Information
+1. Enter an appropriate **name**, **description**, and **publisher**.
+2. (Optional) To find a suitable app icon, use [aaronparker's icon repository](https://github.com/aaronparker/icons).
+3. Click **Next**.
 
 #### Step 3: Configure Program Install & Uninstall Commands
 - **Install Command:**
@@ -39,24 +36,20 @@ To deploy WingetWingman via Microsoft Intune, follow these steps:
   ```powershell
   Invoke-AppDeployToolkit.exe -wingetID "yourwingetid" -DeploymentType Uninstall -DeployMode Silent
   ```
-7. Set the **Install behavior** to **System**.
-8. Click **Next**.
+4. Set the **Install behavior** to **System**.
+5. Click **Next**.
 
 #### Step 4: Configure Detection Rules
 1. Choose **Manually configure detection rules**.
 2. Add a new detection rule:
-   - Rule type: **File or folder exists**.
-   - Path: `C:\Program Files\YourAppFolder` (Replace with actual installation path).
-   - Detection method: **File or folder must exist**.
+   - Rule type: **Custom script**.
+   - Upload your detection script.
 3. Click **OK**, then **Next**.
 
 #### Step 5: Assign the App
 1. Select the user groups or device groups for deployment.
 2. Click **Next** and review your settings.
 3. Click **Create** to finalize the deployment.
-
-### 3. Upload the Detection Script
-Ensure that your detection script is uploaded to Intune for proper deployment verification.
 
 ## Finding Winget IDs
 To find the **winget ID** of an application, run the following command in PowerShell:
