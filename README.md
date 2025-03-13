@@ -88,8 +88,7 @@ All `winget IDs` stored here will be checked and updated weekly.
 | `HKLM\Software\WingetWingman\AutoUpdate` | Registry location for tracking applications set to auto-update. |
 
 ## Notes
-- Applications that do **not** support `winget upgrade` will not be auto-updated.
-- Ensure `winget` is installed and configured on the target devices.
+- Winget might be several versions behind in some cases. Make sure that the app you're deploying is maintaining their winget versions properly.
 
 ## License
 This project follows the licensing terms of **PSADT**, **PSADT.WinGet**, and **winget-install**.
