@@ -69,6 +69,7 @@ Look for the **ID** column in the output, which contains the identifier needed f
 |------------|-------------|
 | `-wingetID "yourwingetid"` | Specifies the **winget ID** of the application to install. |
 | `-AutoUpdate` | *(Optional)* Enables automatic updates via a scheduled task. Disabled by default. |
+| `-Version` | *(Optional)* Specifies the version to install if not the latest.|
 
 ## Auto-Update Mechanism
 - A scheduled task is created when **AutoUpdate** is enabled.
