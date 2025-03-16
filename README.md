@@ -38,6 +38,10 @@ To deploy WingetWingman via Microsoft Intune, follow these steps:
   ```powershell
   Invoke-AppDeployToolkit.exe -wingetID "yourwingetid" -DeploymentType Uninstall -DeployMode Silent
   ```
+  If the package can't be silently uninstalled (due to lacking silent uninstall strings [in the manifest](https://github.com/microsoft/winget-pkgs/tree/master/manifests), you can use the below to make sure that the uninstall dialog is displayed to the end-user.
+  ```powershell
+  %SystemRoot%\System32\WindowsPowerShell\v1.0\PowerShell.exe -ExecutionPolicy Bypass -NoProfile -File Invoke-ServiceUI.ps1 -wingetID "yourwingetid" -DeploymentType Uninstall
+  ```
 4. Set the **Install behavior** to **System**.
 5. Click **Next**.
 
