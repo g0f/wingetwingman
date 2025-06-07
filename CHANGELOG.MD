@@ -2,6 +2,14 @@
 
 All notable changes to WingetWingman will be documented in this file.
 
+## [1.0.6] - TBD
+### Fixed
+- Fixed invalid `-ContinueOnError` parameter in registry cleanup logic
+- Improved error logging in uninstall process for better troubleshooting
+
+### Changed
+- Enhanced logging in registry cleanup process
+
 ## [1.0.5] - 2025-06-07
 ### Added
 - Improved error handling for file copy operations
