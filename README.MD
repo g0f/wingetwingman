@@ -32,6 +32,19 @@ Use the command:
 ```powershell
 Invoke-AppDeployToolkit.exe -wingetID "7zip.7zip" -DeploymentType Install -DeployMode Silent -AutoUpdate
 ```
+## Required Detection Script
+
+For Intune to properly detect the application, you **must** upload this detection script:
+
+**detection-script.ps1:**
+```powershell
+# Detection Script for WingetWingman
+# Original author: https://github.com/Romanitho/Winget-Install
+# 
+# CHANGE THIS: Set $AppToDetect to your winget package ID
+$AppToDetect = "YourPackage.ID.Here"
+
+# [paste your full script here]
 
 ## Intune Deployment Guide
 
