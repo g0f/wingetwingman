@@ -2,9 +2,10 @@
 
 All notable changes to WingetWingman will be documented in this file.
 
-## [1.0.6] - TBD
+## [1.0.6] - 2025-06-07
 ### Fixed
 - Fixed invalid `-ContinueOnError` parameter in registry cleanup logic
+- Fixed bad count of remaining apps in registry cleanup logic
 - Improved error logging in uninstall process for better troubleshooting
 
 ### Changed
