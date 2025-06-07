@@ -259,14 +259,7 @@ function Uninstall-ADTDeployment
     $adtSession.InstallPhase = $adtSession.DeploymentType
 
 	Repair-ADTWinGetPackageManager
-	try {
-		$wingetVersion = & winget --version
-		Write-ADTLogEntry -Message "WinGet is available: $wingetVersion" -Source $adtSession.DeployAppScriptFriendlyName
-	} catch {
-		Write-ADTLogEntry -Message "WinGet repair failed or WinGet is not available. Cannot proceed." -Severity 3 -Source $adtSession.DeployAppScriptFriendlyName
-		throw "WinGet is not functional after repair attempt"
-	}
-	
+
 	Uninstall-ADTWinGetPackage -Id $wingetID -Force
 
     ##================================================
