@@ -122,7 +122,7 @@ if ($Apps) {
 | `-AutoUpdate` | Enable automatic weekly updates | No | Disabled |
 | `-Version` | Specific version to install | No | Latest |
 | `-DeploymentType` | Install, Uninstall, or Repair | No | Install |
-| `-DeployMode` | Silent, Interactive, or NonInteractive | No | Interactive |
+| `-DeployMode` | Silent, Interactive, or NonInteractive | No | Silent |
 
 ### Finding WinGet IDs
 To find the correct winget ID for an application:
