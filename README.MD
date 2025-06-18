@@ -108,7 +108,7 @@ if ($Apps) {
      ```
    - **Uninstall Command with UI (if silent uninstall don't work)**:
      ```
-    %SystemRoot%\System32\WindowsPowerShell\v1.0\PowerShell.exe -ExecutionPolicy Bypass -NoProfile -File Invoke-ServiceUI.ps1 -wingetID "yourwingetid" -DeploymentType Uninstall
+%SystemRoot%\System32\WindowsPowerShell\v1.0\PowerShell.exe -ExecutionPolicy Bypass -NoProfile -File Invoke-ServiceUI.ps1 -wingetID "yourwingetid" -DeploymentType Uninstall
      ```
    - **Install behavior**: System
 
