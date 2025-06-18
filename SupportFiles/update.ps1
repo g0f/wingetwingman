@@ -6,6 +6,55 @@ Import-Module "$PSScriptRoot\PSAppDeployToolkit.WinGet\PSAppDeployToolkit.WinGet
 
 Write-Output "Starting winget updates at $(Get-Date)"
 
+function Compare-Versions {
+    param(
+        [string]$CurrentVersion,
+        [string]$LatestVersion
+    )
+    
+    if ([string]::IsNullOrWhiteSpace($CurrentVersion)) {
+        return $true 
+    }
+    
+    if ([string]::IsNullOrWhiteSpace($LatestVersion)) {
+        return $false
+    }
+    
+    $currentTrimmed = $CurrentVersion.Trim()
+    $latestTrimmed = $LatestVersion.Trim()
+    
+    $currentSimple = $currentTrimmed -replace '\.0+$', ''
+    $latestSimple = $latestTrimmed -replace '\.0+$', ''
+    
+    if ($currentSimple -eq $latestSimple) {
+        return $false
+    }
+    
+    try {
+        $currentForParsing = if ($currentTrimmed -notmatch '\.') { "$currentTrimmed.0" } else { $currentTrimmed }
+        $latestForParsing = if ($latestTrimmed -notmatch '\.') { "$latestTrimmed.0" } else { $latestTrimmed }
+        
+        $current = [System.Version]::new($currentForParsing)
+        $latest = [System.Version]::new($latestForParsing)
+        return $latest -gt $current
+    }
+    catch {
+        return $currentTrimmed -ne $latestTrimmed
+    }
+}
+
+function Test-PackageInstalled {
+    param([string]$PackageId)
+    
+    try {
+        $installed = Get-ADTWinGetPackage -Id $PackageId -ErrorAction SilentlyContinue
+        return $null -ne $installed -and ![string]::IsNullOrWhiteSpace($installed.Version)
+    }
+    catch {
+        return $false
+    }
+}
+
 $registryValues = Get-ADTRegistryKey -Key "HKLM:\SOFTWARE\WingetWingman\AutoUpdate"
 
 if (-not $registryValues) {
@@ -28,22 +77,37 @@ $updateResults = @{
     Failed = @()
     UpToDate = @()
     NotFound = @()
+    Skipped = @()
 }
 
 foreach ($package in $packageNames) {
     Write-Output "========================================"
     Write-Output "Processing package: $package"
     
+    if (-not (Test-PackageInstalled -PackageId $package)) {
+        Write-Output "Package $package not found via winget (may not be installed or registry out of sync)"
+        $updateResults.NotFound += $package
+        continue
+    }
+    
     try {
         $currentPackage = Get-ADTWinGetPackage -Id $package -ErrorAction Stop
+        
+        if ([string]::IsNullOrWhiteSpace($currentPackage.Version)) {
+            Write-Output "Current version is empty for $package, skipping update"
+            $updateResults.Skipped += "$package (empty version)"
+            continue
+        }
         
         try {
             $latestPackage = Find-ADTWinGetPackage -Id $package -ErrorAction Stop
             
-            Write-Output "Current version: $($currentPackage.Version)"
-            Write-Output "Latest version: $($latestPackage.Version)"
+            Write-Output "Current version: '$($currentPackage.Version)'"
+            Write-Output "Latest version: '$($latestPackage.Version)'"
             
-            if ($latestPackage.Version -ne $currentPackage.Version) {
+            $needsUpdate = Compare-Versions -CurrentVersion $currentPackage.Version -LatestVersion $latestPackage.Version
+            
+            if ($needsUpdate) {
                 Write-Output "Update required. Attempting to update $package..."
 
                 $updated = $false
@@ -57,7 +121,12 @@ foreach ($package in $packageNames) {
                     $errorMessage = $_.ToString()
                     Write-Output "SYSTEM update failed for $package with error: $errorMessage"
 
-                    if ($errorMessage -like "*EXTRACT_ARCHIVE_FAILED*") {
+                    if ($errorMessage -like "*UPDATE_NOT_APPLICABLE*") {
+                        Write-Output "Winget reports no update available - versions may be equivalent"
+                        $updateResults.UpToDate += "$package (winget says up-to-date: $($currentPackage.Version))"
+                        continue
+                    }
+                    elseif ($errorMessage -like "*EXTRACT_ARCHIVE_FAILED*") {
                         Write-Output "Retrying update for $package as user..."
 
                         $wingetCmd = "winget upgrade $package --silent --accept-package-agreements --accept-source-agreements"
@@ -70,6 +139,11 @@ foreach ($package in $packageNames) {
                         catch {
                             Write-Output "User-context update failed for ${package}: $_"
                         }
+                    }
+                    elseif ($errorMessage -like "*NO_APPLICATIONS_FOUND*") {
+                        Write-Output "Package not found during update - may have been uninstalled"
+                        $updateResults.NotFound += $package
+                        continue
                     }
                 }
 
@@ -113,6 +187,11 @@ foreach ($pkg in $updateResults.Failed) {
 
 Write-Output "Packages not found: $($updateResults.NotFound.Count)"
 foreach ($pkg in $updateResults.NotFound) {
+    Write-Output "  - $pkg"
+}
+
+Write-Output "Packages skipped: $($updateResults.Skipped.Count)"
+foreach ($pkg in $updateResults.Skipped) {
     Write-Output "  - $pkg"
 }
 
