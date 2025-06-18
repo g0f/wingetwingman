@@ -99,17 +99,11 @@ if ($Apps) {
 
 6. **Set installation commands**:
    - **Install Command**:
-     ```
-     Invoke-AppDeployToolkit.exe -wingetID "yourwingetid" -DeploymentType Install -DeployMode Silent -AutoUpdate
-     ```
+     ```Invoke-AppDeployToolkit.exe -wingetID "yourwingetid" -DeploymentType Install -DeployMode Silent -AutoUpdate```
    - **Uninstall Command**:
-     ```
-     Invoke-AppDeployToolkit.exe -wingetID "yourwingetid" -DeploymentType Uninstall -DeployMode Silent
-     ```
+     ```Invoke-AppDeployToolkit.exe -wingetID "yourwingetid" -DeploymentType Uninstall -DeployMode Silent ```
    - **Uninstall Command with UI (if silent uninstall don't work)**:
-     ```
-%SystemRoot%\System32\WindowsPowerShell\v1.0\PowerShell.exe -ExecutionPolicy Bypass -NoProfile -File Invoke-ServiceUI.ps1 -wingetID "yourwingetid" -DeploymentType Uninstall
-     ```
+     ```%SystemRoot%\System32\WindowsPowerShell\v1.0\PowerShell.exe -ExecutionPolicy Bypass -NoProfile -File Invoke-ServiceUI.ps1 -wingetID "yourwingetid" -DeploymentType Uninstall```
    - **Install behavior**: System
 
 7. **Configure detection rules**:
