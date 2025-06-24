@@ -1,4 +1,4 @@
-﻿<#
+<#
 
 .SYNOPSIS
 PSAppDeployToolkit - This script performs the installation or uninstallation of an application(s).
@@ -92,7 +92,10 @@ param
     [System.String]$wingetID,
     
     [Parameter(Mandatory = $false)]
-    [System.String]$Version
+    [System.String]$Version,
+
+    [Parameter(Mandatory = $false)]
+    [System.String]$Custom
 )
 
 
@@ -102,30 +105,29 @@ param
 
 $adtSession = @{
     # App variables.
-    AppVendor = ''
-    AppName = 'Winget Wingman'
-    AppVersion = ''
-    AppArch = ''
-    AppLang = 'en'
-    AppRevision = '01'
-    AppSuccessExitCodes = @(0)
-    AppRebootExitCodes = @(1641, 3010)
-    AppScriptVersion = '1.0.7'
-    AppScriptDate = '2025-06-18'
-    AppScriptAuthor = 'Simon Enbom'
+    AppVendor                   = ''
+    AppName                     = 'Winget Wingman'
+    AppVersion                  = ''
+    AppArch                     = ''
+    AppLang                     = 'en'
+    AppRevision                 = '01'
+    AppSuccessExitCodes         = @(0)
+    AppRebootExitCodes          = @(1641, 3010)
+    AppScriptVersion            = '1.0.8'
+    AppScriptDate               = '2025-06-24'
+    AppScriptAuthor             = 'Simon Enbom'
 
     # Install Titles (Only set here to override defaults set by the toolkit).
-    InstallName = 'Winget Wingman'
-    InstallTitle = 'Winget Wingman'
+    InstallName                 = 'Winget Wingman'
+    InstallTitle                = "Winget Wingman - $wingetID"
 
     # Script variables.
     DeployAppScriptFriendlyName = $MyInvocation.MyCommand.Name
-    DeployAppScriptVersion = '4.0.6'
-    DeployAppScriptParameters = $PSBoundParameters
+    DeployAppScriptVersion      = '4.0.6'
+    DeployAppScriptParameters   = $PSBoundParameters
 }
 
-function Install-ADTDeployment
-{
+function Install-ADTDeployment {
     ##================================================
     ## MARK: Pre-Install
     ##================================================
@@ -144,6 +146,8 @@ function Install-ADTDeployment
 
         $sourcePathScript = "$($adtSession.DirSupportFiles)\update.ps1"
         $destPathScript = "$wingetWingmanPath\update.ps1"
+        $sourcePathScout = "$($adtSession.DirSupportFiles)\scout.ps1"
+        $destPathScout = "$wingetWingmanPath\scout.ps1"
         $sourcePathPSADT = "$($adtSession.ScriptDirectory)\PSAppDeployToolkit"
         $destPathPSADT = "$wingetWingmanPath\PSAppDeployToolkit"
         $sourcePathWingetModule = "$($adtSession.ScriptDirectory)\PSAppDeployToolkit.WinGet"
@@ -153,21 +157,35 @@ function Install-ADTDeployment
             if (!(Test-Path $destPathScript) -or ((Get-Item $sourcePathScript).LastWriteTime -gt (Get-Item $destPathScript).LastWriteTime)) {
                 Copy-ADTFile -Path $sourcePathScript -Destination $destPathScript
                 Write-ADTLogEntry -Message "Successfully copied update.ps1" -Source $adtSession.DeployAppScriptFriendlyName
-            } else {
+            }
+            else {
                 Write-ADTLogEntry -Message "Skipping update.ps1: destination is newer or same." -Source $adtSession.DeployAppScriptFriendlyName
             }
-        } catch {
+        }
+        catch {
             Write-ADTLogEntry -Message "Failed to copy update.ps1: $($_.Exception.Message)" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
+        }
+
+        try {
+            if (!(Test-Path $destPathScout) -or ((Get-Item $sourcePathScout).LastWriteTime -gt (Get-Item $destPathScout).LastWriteTime)) {
+                Copy-ADTFile -Path $sourcePathScout -Destination $destPathScout
+                Write-ADTLogEntry -Message "Successfully copied scout.ps1" -Source $adtSession.DeployAppScriptFriendlyName
+            }
+        }
+        catch {
+            Write-ADTLogEntry -Message "Failed to copy scout.ps1: $($_.Exception.Message)" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
         }
 
         try {
             if (!(Test-Path $destPathPSADT) -or ((Get-Item $sourcePathPSADT).LastWriteTime -gt (Get-Item $destPathPSADT).LastWriteTime)) {
                 Copy-ADTFile -Path $sourcePathPSADT -Destination $destPathPSADT -Recurse
                 Write-ADTLogEntry -Message "Successfully copied PSAppDeployToolkit" -Source $adtSession.DeployAppScriptFriendlyName
-            } else {
+            }
+            else {
                 Write-ADTLogEntry -Message "Skipping PSAppDeployToolkit: destination is newer or same." -Source $adtSession.DeployAppScriptFriendlyName
             }
-        } catch {
+        }
+        catch {
             Write-ADTLogEntry -Message "Failed to copy PSAppDeployToolkit: $($_.Exception.Message)" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
         }
 
@@ -175,10 +193,12 @@ function Install-ADTDeployment
             if (!(Test-Path $destPathWingetModule) -or ((Get-Item $sourcePathWingetModule).LastWriteTime -gt (Get-Item $destPathWingetModule).LastWriteTime)) {
                 Copy-ADTFile -Path $sourcePathWingetModule -Destination $destPathWingetModule -Recurse
                 Write-ADTLogEntry -Message "Successfully copied PSAppDeployToolkit.WinGet" -Source $adtSession.DeployAppScriptFriendlyName
-            } else {
+            }
+            else {
                 Write-ADTLogEntry -Message "Skipping PSAppDeployToolkit.WinGet: destination is newer or same." -Source $adtSession.DeployAppScriptFriendlyName
             }
-        } catch {
+        }
+        catch {
             Write-ADTLogEntry -Message "Failed to copy PSAppDeployToolkit.WinGet: $($_.Exception.Message)" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
         }
     }
@@ -189,62 +209,114 @@ function Install-ADTDeployment
     $adtSession.InstallPhase = $adtSession.DeploymentType
 
     if ($Version) {
-        Write-ADTLogEntry -Message "Version $Version specified. Verifying it exists for package $wingetID..." -Source $adtSession.DeployAppScriptFriendlyName
-        try {
-            $availableVersions = & winget show $wingetID --versions
-            if ($availableVersions -notmatch $Version) {
-                Write-ADTLogEntry -Message "Warning: Version $Version may not be available for $wingetID. Proceeding anyway." -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
-            }
-        } catch {
-            Write-ADTLogEntry -Message "Could not verify version availability for $wingetID. Proceeding with installation attempt." -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
-        }
-        
         Write-ADTLogEntry -Message "Version $Version specified." -Source $adtSession.DeployAppScriptFriendlyName
-        Install-ADTWinGetPackage -Id $wingetID -Version $Version -Force
-    } else {
-        Install-ADTWinGetPackage -Id $wingetID -Force
+    
+        if ($Custom) {
+            Write-ADTLogEntry -Message "Custom arguments specified: $Custom" -Source $adtSession.DeployAppScriptFriendlyName
+            Install-ADTWinGetPackage -Id $wingetID -Version $Version -Custom $Custom -Force
+        }
+        else {
+            Install-ADTWinGetPackage -Id $wingetID -Version $Version -Force
+        }
+    }
+    else {
+        if ($Custom) {
+            Write-ADTLogEntry -Message "Custom arguments specified: $Custom" -Source $adtSession.DeployAppScriptFriendlyName
+            Install-ADTWinGetPackage -Id $wingetID -Custom $Custom -Force
+        }
+        else {
+            Install-ADTWinGetPackage -Id $wingetID -Force
+        }
     }
 
     ##================================================
     ## MARK: Post-Install
     ##================================================
     $adtSession.InstallPhase = "Post-$($adtSession.DeploymentType)"
-
     ## <Perform Post-Installation tasks here>
     if ($AutoUpdate) {
-        
+
         #Creates registry keys
         $registryPath = "HKLM:\SOFTWARE\WingetWingman\AutoUpdate"
         $regKeyExists = Get-ADTRegistryKey -Key $registryPath -Name $wingetID
-        
+
         if ($regKeyExists) {
             Write-ADTLogEntry -Message "Package ID $wingetID already exists in registry" -Source $adtSession.DeployAppScriptFriendlyName
-        } else {
+        }
+        else {
             Set-ADTRegistryKey -Key $registryPath -Name $wingetID -Value "1" -Type String
         }
-        
-        #Creates scheduled task
-        $taskName = "winget_wingman_weekly_update"
-        $taskPath = '\Winget Wingman\'
-        
-        $taskExists = Get-ScheduledTask -TaskName $taskName -TaskPath $taskPath -ErrorAction SilentlyContinue
 
-        if ($taskExists) {
-            Write-ADTLogEntry -Message "Scheduled task $taskName already exists. Skipping creation." -Source $adtSession.DeployAppScriptFriendlyName
-        } else {
-            Write-ADTLogEntry -Message "Scheduled task $taskName doesn't exist. Creating scheduled task that runs 3AM on Wednesdays..." -Source $adtSession.DeployAppScriptFriendlyName
-            $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File $destPathScript"
-            $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Wednesday -At 3am
-            $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-            $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-        
-            Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -TaskPath $taskPath
+        #Creates scout scheduled task (checks for updates frequently)
+        $scoutTaskName = "winget_wingman_scout"
+        $scoutTaskPath = '\Winget Wingman\'
+
+        $scoutTaskExists = Get-ScheduledTask -TaskName $scoutTaskName -TaskPath $scoutTaskPath -ErrorAction SilentlyContinue
+        if ($scoutTaskExists) {
+            Write-ADTLogEntry -Message "Scout task $scoutTaskName already exists. Updating with new configuration..." -Source $adtSession.DeployAppScriptFriendlyName
+            Unregister-ScheduledTask -TaskName $scoutTaskName -TaskPath $scoutTaskPath -Confirm:$false
         }
+
+        Write-ADTLogEntry -Message "Creating scout task that checks for updates every 5 hours..." -Source $adtSession.DeployAppScriptFriendlyName
+        $scoutAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File $wingetWingmanPath\scout.ps1"
+
+        # Scout trigger that repeats every 5 hours
+        $scoutTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).Date.AddHours(9) -RepetitionInterval (New-TimeSpan -Hours 5)
+
+        $scoutPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+        $scoutSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 15)
+
+        Register-ScheduledTask -TaskName $scoutTaskName -Action $scoutAction -Trigger $scoutTrigger -Principal $scoutPrincipal -Settings $scoutSettings -TaskPath $scoutTaskPath
+
+        # TASK 1: Weekly update task with idle conditions
+        $weeklyTaskName = "winget_wingman_weekly_update" 
+        $weeklyTaskPath = '\Winget Wingman\'
+
+        $weeklyTaskExists = Get-ScheduledTask -TaskName $weeklyTaskName -TaskPath $weeklyTaskPath -ErrorAction SilentlyContinue
+        if ($weeklyTaskExists) {
+            Write-ADTLogEntry -Message "Weekly task $weeklyTaskName already exists. Updating with new configuration..." -Source $adtSession.DeployAppScriptFriendlyName
+            Unregister-ScheduledTask -TaskName $weeklyTaskName -TaskPath $weeklyTaskPath -Confirm:$false
+        }
+
+        Write-ADTLogEntry -Message "Creating weekly update task with idle conditions..." -Source $adtSession.DeployAppScriptFriendlyName
+        $weeklyAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File $destPathScript"
+        $weeklyTrigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Wednesday -At 3am
+        $weeklyPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+        $weeklySettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
+            -RunOnlyIfIdle `
+            -IdleDuration (New-TimeSpan -Hours 2) `
+            -RestartOnIdle `
+            -ExecutionTimeLimit (New-TimeSpan -Hours 1) `
+            -RestartCount 2 `
+            -RestartInterval (New-TimeSpan -Minutes 15)
+
+        Register-ScheduledTask -TaskName $weeklyTaskName -Action $weeklyAction -Trigger $weeklyTrigger -Principal $weeklyPrincipal -Settings $weeklySettings -TaskPath $weeklyTaskPath
+
+        # TASK 2: Logon update task without idle conditions
+        $logonTaskName = "winget_wingman_logon_update"
+        $logonTaskPath = '\Winget Wingman\'
+
+        $logonTaskExists = Get-ScheduledTask -TaskName $logonTaskName -TaskPath $logonTaskPath -ErrorAction SilentlyContinue
+        if ($logonTaskExists) {
+            Write-ADTLogEntry -Message "Logon task $logonTaskName already exists. Updating with new configuration..." -Source $adtSession.DeployAppScriptFriendlyName
+            Unregister-ScheduledTask -TaskName $logonTaskName -TaskPath $logonTaskPath -Confirm:$false
+        }
+
+        Write-ADTLogEntry -Message "Creating logon update task without idle conditions..." -Source $adtSession.DeployAppScriptFriendlyName
+        $logonAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File $destPathScript"
+        $logonTrigger = New-ScheduledTaskTrigger -AtLogon
+        $logonTrigger.Delay = "PT30S"
+        $logonPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+        $logonSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
+            -ExecutionTimeLimit (New-TimeSpan -Hours 1) `
+            -RestartCount 2 `
+            -RestartInterval (New-TimeSpan -Minutes 15)
+
+        Register-ScheduledTask -TaskName $logonTaskName -Action $logonAction -Trigger $logonTrigger -Principal $logonPrincipal -Settings $logonSettings -TaskPath $logonTaskPath
     }
 }
 
-function Uninstall-ADTDeployment
-{
+function Uninstall-ADTDeployment {
     ##================================================
     ## MARK: Pre-Uninstall
     ##================================================
@@ -252,55 +324,63 @@ function Uninstall-ADTDeployment
 
     ## <Perform Pre-Uninstallation tasks here>
 
-
     ##================================================
     ## MARK: Uninstall
     ##================================================
     $adtSession.InstallPhase = $adtSession.DeploymentType
-
     Repair-ADTWinGetPackageManager
-    
-    Uninstall-ADTWinGetPackage -Id $wingetID -Force
 
+    Uninstall-ADTWinGetPackage -Id $wingetID -Force -Mode $DeployMode -PassThru
+	
+    if ($DeployMode -eq "Silent") {
+        Start-Sleep -Seconds 60
+        $stillInstalled = Get-ADTWinGetPackage -Id $wingetID -ErrorAction SilentlyContinue
+        if ($stillInstalled) {
+            Write-ADTLogEntry -Message "The silent uninstall for $($stillInstalled.Name) did not complete successfully.`n`nUpdate the Intune uninstall command to use Interactive mode instead of Silent mode." -Source $adtSession.DeployAppScriptFriendlyName
+            throw "Uninstall reported success but package is still installed - manual intervention required"
+        }
+    }
     ##================================================
     ## MARK: Post-Uninstallation
     ##================================================
     $adtSession.InstallPhase = "Post-$($adtSession.DeploymentType)"
     $registryPath = "HKLM:\SOFTWARE\WingetWingman\AutoUpdate"
     Remove-ADTRegistryKey -Key $registryPath -Name $wingetID
-   
+
     try {
         $remainingApps = Get-ADTRegistryKey -Key $registryPath
-    
+
         if ($remainingApps) {
-            $appProperties = $remainingApps.PSObject.Properties | Where-Object {$_.Name -notlike "PS*"}
+            $appProperties = $remainingApps.PSObject.Properties | Where-Object { $_.Name -notlike "PS*" }
             $appCount = $appProperties.Count
             Write-ADTLogEntry -Message "Found $appCount apps for auto-update: $($appProperties.Name -join ', ')" -Source $adtSession.DeployAppScriptFriendlyName
-        } else {
+        }
+        else {
             $appCount = 0
             Write-ADTLogEntry -Message "No apps found in registry for auto-update." -Source $adtSession.DeployAppScriptFriendlyName
         }
-    
+
         if ($appCount -eq 0) {
             Write-ADTLogEntry -Message "No more apps for auto-update. Removing scheduled task." -Source $adtSession.DeployAppScriptFriendlyName
             $taskName = "winget_wingman_weekly_update"
             $taskPath = '\Winget Wingman\'
-        
+
             $taskExists = Get-ScheduledTask -TaskName $taskName -TaskPath $taskPath -ErrorAction SilentlyContinue
             if ($taskExists) {
                 Unregister-ScheduledTask -TaskName $taskName -TaskPath $taskPath -Confirm:$false
                 Write-ADTLogEntry -Message "Scheduled task removed successfully." -Source $adtSession.DeployAppScriptFriendlyName
             }
-        } else {
+        }
+        else {
             Write-ADTLogEntry -Message "$appCount apps remaining for auto-update. Keeping scheduled task." -Source $adtSession.DeployAppScriptFriendlyName
         }
-    } catch {
+    }
+    catch {
         Write-ADTLogEntry -Message "Could not check remaining apps in registry. Scheduled task will remain." -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
     }
 }
 
-function Repair-ADTDeployment
-{
+function Repair-ADTDeployment {
     ##================================================
     ## MARK: Pre-Repair
     ##================================================
@@ -336,31 +416,25 @@ $ProgressPreference = [System.Management.Automation.ActionPreference]::SilentlyC
 Set-StrictMode -Version 1
 
 # Import the module and instantiate a new session.
-try
-{
-    $moduleName = if ([System.IO.File]::Exists("$PSScriptRoot\PSAppDeployToolkit\PSAppDeployToolkit.psd1"))
-    {
+try {
+    $moduleName = if ([System.IO.File]::Exists("$PSScriptRoot\PSAppDeployToolkit\PSAppDeployToolkit.psd1")) {
         Get-ChildItem -LiteralPath $PSScriptRoot\PSAppDeployToolkit -Recurse -File | Unblock-File -ErrorAction Ignore
         "$PSScriptRoot\PSAppDeployToolkit\PSAppDeployToolkit.psd1"
     }
-    else
-    {
+    else {
         'PSAppDeployToolkit'
     }
     Import-Module -FullyQualifiedName @{ ModuleName = $moduleName; Guid = '8c3c366b-8606-4576-9f2d-4051144f7ca2'; ModuleVersion = '4.0.6' } -Force
-    try
-    {
+    try {
         $iadtParams = Get-ADTBoundParametersAndDefaultValues -Invocation $MyInvocation
         $adtSession = Open-ADTSession -SessionState $ExecutionContext.SessionState @adtSession @iadtParams -PassThru
     }
-    catch
-    {
+    catch {
         Remove-Module -Name PSAppDeployToolkit* -Force
         throw
     }
 }
-catch
-{
+catch {
     $Host.UI.WriteErrorLine((Out-String -InputObject $_ -Width ([System.Int32]::MaxValue)))
     exit 60008
 }
@@ -370,11 +444,9 @@ catch
 ## MARK: Invocation
 ##================================================
 
-try
-{
+try {
     Get-Item -Path $PSScriptRoot\PSAppDeployToolkit.* | & {
-        process
-        {
+        process {
             Get-ChildItem -LiteralPath $_.FullName -Recurse -File | Unblock-File -ErrorAction Ignore
             Import-Module -Name $_.FullName -Force
         }
@@ -382,13 +454,11 @@ try
     & "$($adtSession.DeploymentType)-ADTDeployment"
     Close-ADTSession
 }
-catch
-{
+catch {
     Write-ADTLogEntry -Message ($mainErrorMessage = Resolve-ADTErrorRecord -ErrorRecord $_) -Severity 3
     Show-ADTDialogBox -Text $mainErrorMessage -Icon Stop | Out-Null
     Close-ADTSession -ExitCode 60001
 }
-finally
-{
+finally {
     Remove-Module -Name PSAppDeployToolkit* -Force
 }
