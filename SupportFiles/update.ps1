@@ -25,8 +25,6 @@ if ($packageNames.Count -eq 0) {
 }
 
 Write-Output "Found $($packageNames.Count) packages flagged for updates"
-
-# Second check: Only now check user activity since we have updates to install
 Write-Output "Checking user activity before proceeding with updates..."
 
 # Check if any users are logged on
@@ -36,15 +34,26 @@ if ($loggedOnUsers) {
    
     # Check system idle time
     try {
-        $idleTime = Get-ADTSystemIdleTime
-        $idleHours = $idleTime.TotalHours
-       
-        if ($idleHours -lt 1) {
-            Write-Output "User has been active within the last hour (idle for only $([math]::Round($idleTime.TotalMinutes, 1)) minutes)"
-            Write-Output "Exiting with retry code - task will attempt again in 1 hour"
-            Stop-Transcript
-            exit 1
-        }
+		$loggedOnUsers = Get-ADTLoggedOnUser
+		$hasActiveUser = $false
+
+		foreach ($User in $loggedOnUsers) {
+			Write-Output "User: $($User.NTAccount) | Idle: $($User.IdleTime.TotalMinutes) min | Console: $($User.IsConsoleSession)"
+			
+			if ($User.IsConsoleSession -and $User.IdleTime.TotalMinutes -lt 60) {
+				$hasActiveUser = $true
+				Write-Output "Console user is active (idle less than 60 minutes)"
+				break
+			}
+		}
+
+		if ($hasActiveUser) {
+			Write-Output "Active user detected - exiting with retry code"
+			Stop-Transcript
+			exit 1
+		}
+
+		Write-Output "All users idle for more than 60 minutes - proceeding with updates"
         else {
             Write-Output "System has been idle for $([math]::Round($idleHours, 2)) hours - proceeding with updates"
         }
