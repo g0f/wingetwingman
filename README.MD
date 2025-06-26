@@ -4,17 +4,20 @@
 ![GitHub downloads](https://img.shields.io/github/downloads/g0f/wingetwingman/total)
 ![License](https://img.shields.io/github/license/g0f/wingetwingman)
 
+🔧 **Need help generating commands or just don't are about the details?** Check out [winget.enbom.eu](https://winget.enbom.eu)
+
 **A lightweight deployment solution that leverages winget for enterprise application management.**
 
-WingetWingman is built on [PSAppDeployToolkit](https://github.com/PSAppDeployToolkit/PSAppDeployToolkit) and [PSAppDeployToolkit.WinGet](https://github.com/mjr4077au/PSAppDeployToolkit.WinGet/) by [mjr4077au](https://github.com/mjr4077au), incorporating scripts from winget-install by [Romanitho](https://github.com/Romanitho). It enables quick and easy deployment of standard applications through Microsoft Intune with optional automatic updates.
+WingetWingman is built on [PSAppDeployToolkit](https://github.com/PSAppDeployToolkit/PSAppDeployToolkit) and [PSAppDeployToolkit.WinGet](https://github.com/mjr4077au/PSAppDeployToolkit.WinGet/) by [mjr4077au](https://github.com/mjr4077au), incorporating scripts from winget-install by [Romanitho](https://github.com/Romanitho). It enables quick and easy deployment of applications through Microsoft Intune with optional automatic updates.
 
 ## Features
 
 - **Simple Deployment**: Install applications using winget via PSAppDeployToolkit
-- **Auto-Update Support**: Optional scheduled task for weekly application updates  
-- **Minimal Configuration**: Requires only a few parameters to deploy
+- **Smart Auto-Updates**: Scouting task checks for updates every 5 hours, auto-update runs every 4 hours when user is idle
+- **Custom Arguments**: Pass any custom install arguments you need via the `-Custom` parameter
+- **Minimal Configuration**: Just need a winget ID and you're good to go
 - **Enterprise Ready**: Built for Microsoft Intune deployment with comprehensive logging
-- **WinGet Installation**: Automatically installs and configures WinGet if not present on target devices
+- **WinGet Installation**: Automatically installs and repairs WinGet if needed
 
 ## Quick Start
 
@@ -28,10 +31,16 @@ Get the latest version from our [Releases page](https://github.com/g0f/wingetwin
 Update the detection script variable `$AppToDetect` to match your target application.
 
 ### Deploy via Intune
-Use the command:
+Basic install:
 ```powershell
 Invoke-AppDeployToolkit.exe -wingetID "7zip.7zip" -DeploymentType Install -DeployMode Silent -AutoUpdate
 ```
+
+With custom arguments:
+```powershell
+Invoke-AppDeployToolkit.exe -wingetID "Twingate.Client" -Version "20.25.72.347" -Custom "network=company.twingate.com;auto_update=true" -AutoUpdate
+```
+
 ## Required Detection Script
 
 For Intune to properly detect the application, you **must** upload this detection script:
@@ -100,9 +109,11 @@ if ($Apps) {
 6. **Set installation commands**:
    - **Install Command**:
      ```Invoke-AppDeployToolkit.exe -wingetID "yourwingetid" -DeploymentType Install -DeployMode Silent -AutoUpdate```
+   - **Install with custom args**:
+     ```Invoke-AppDeployToolkit.exe -wingetID "yourwingetid" -Custom "your custom args here" -AutoUpdate```
    - **Uninstall Command**:
-     ```Invoke-AppDeployToolkit.exe -wingetID "yourwingetid" -DeploymentType Uninstall -DeployMode Silent ```
-   - **Uninstall Command with UI (if silent uninstall don't work)**:
+     ```Invoke-AppDeployToolkit.exe -wingetID "yourwingetid" -DeploymentType Uninstall -DeployMode Silent```
+   - **Uninstall Command with UI (if silent fails)**:
      ```%SystemRoot%\System32\WindowsPowerShell\v1.0\PowerShell.exe -ExecutionPolicy Bypass -NoProfile -File Invoke-ServiceUI.ps1 -wingetID "yourwingetid" -DeploymentType Uninstall```
    - **Install behavior**: System
 
@@ -119,8 +130,9 @@ if ($Apps) {
 | Parameter | Description | Required | Default |
 |-----------|-------------|----------|---------|
 | `-wingetID` | Winget package identifier | Yes | - |
-| `-AutoUpdate` | Enable automatic weekly updates | No | Disabled |
+| `-AutoUpdate` | Enable automatic updates | No | Disabled |
 | `-Version` | Specific version to install | No | Latest |
+| `-Custom` | Custom install arguments | No | - |
 | `-DeploymentType` | Install, Uninstall, or Repair | No | Install |
 | `-DeployMode` | Silent, Interactive, or NonInteractive | No | Silent |
 
@@ -136,28 +148,42 @@ winget search "7-Zip"
 ```
 Look for the **ID** column in the output.
 
+**Or use the web helper:** [winget.enbom.eu](https://winget.enbom.eu) for an easier search experience.
+
 ## Auto-Update Feature
 
-When `-AutoUpdate` is enabled:
+When `-AutoUpdate` is enabled, WingetWingman sets up two scheduled tasks:
 
-- **Schedule**: Runs every Wednesday at 3:00 AM (local time)
-- **Retry Logic**: If missed, attempts to run when device comes online
-- **Registry Tracking**: Stores update settings in `HKLM\Software\WingetWingman\AutoUpdate`
-- **File Location**: Update scripts stored in `C:\ProgramData\WingetWingman`
+### Scout Task (`winget_wingman_scout`)
+- **Schedule**: Every 5 hours starting at 9 AM
+- **Purpose**: Checks for available updates and flags packages that need updating
+- **Registry**: Stores update flags in `HKLM\Software\WingetWingman\UpdatesAvailable`
+
+### Auto-Update Task (`winget_wingman_auto_update`)
+- **Schedule**: Every 4 hours starting at 6 AM
+- **Purpose**: Updates flagged packages when user has been idle for 1+ hours
+- **Retry Logic**: 6 retries with 1-hour intervals if something goes wrong
+- **Smart Execution**: Only runs when it finds packages flagged by the scout
 
 ### Registry Structure
-All winget IDs marked for auto-update are stored in:
+Applications marked for auto-update are tracked in:
 ```
 HKLM\Software\WingetWingman\AutoUpdate
+```
+
+Update flags are stored in:
+```
+HKLM\Software\WingetWingman\UpdatesAvailable
 ```
 
 ## File Locations
 
 | Path | Purpose |
 |------|---------|
-| `C:\ProgramData\WingetWingman` | Update scripts and log files |
+| `C:\ProgramData\WingetWingman` | Update scripts and modules |
 | `C:\ProgramData\WingetWingman\logs` | Scheduled task execution logs |
 | `HKLM\Software\WingetWingman\AutoUpdate` | Registry keys for tracked applications |
+| `HKLM\Software\WingetWingman\UpdatesAvailable` | Registry keys for pending updates |
 
 ## Current Version
 
@@ -171,6 +197,7 @@ Based on:
 - Verify your target application maintains current winget packages
 - Test deployments in a controlled environment before production use
 - WinGet will be automatically installed and configured on target devices if not present
+- The auto-update system respects user activity - updates only happen when the user is idle
 
 ## Troubleshooting
 
@@ -182,14 +209,19 @@ Based on:
 - Review application event logs on target devices
 
 **Auto-update not working**
-- Ensure scheduled task was created successfully
-- Check Task Scheduler > Winget Wingman folder
+- Check Task Scheduler > Winget Wingman folder for both scout and update tasks
 - Review logs in `C:\ProgramData\WingetWingman\logs`
+- Verify registry keys exist in both AutoUpdate and UpdatesAvailable
 
 **Detection script issues**
 - Verify `$AppToDetect` variable matches your application's winget ID
 - Test detection logic manually on target devices
 - Check that the application was installed via winget
+
+**Custom arguments not working**
+- Make sure you're using the `-Custom` parameter correctly
+- Check the logs to see what arguments were actually passed to winget
+- Some installers are picky about argument format - try different variations
 
 ## License
 
@@ -206,4 +238,4 @@ Special thanks to:
 - [mjr4077au](https://github.com/mjr4077au) for PSAppDeployToolkit.WinGet
 - [Romanitho](https://github.com/Romanitho) for winget-install scripts
 
-Made with care for seamless enterprise deployments.
+Made for people who want winget deployments that just work.
