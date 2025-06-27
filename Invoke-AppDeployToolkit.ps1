@@ -1,4 +1,4 @@
-﻿<#
+<#
 
 .SYNOPSIS
 PSAppDeployToolkit - This script performs the installation or uninstallation of an application(s).
@@ -113,8 +113,8 @@ $adtSession = @{
     AppRevision                 = '01'
     AppSuccessExitCodes         = @(0)
     AppRebootExitCodes          = @(1641, 3010)
-    AppScriptVersion            = '1.0.8'
-    AppScriptDate               = '2025-06-24'
+    AppScriptVersion            = '1.0.9'
+    AppScriptDate               = '2025-06-27'
     AppScriptAuthor             = 'Simon Enbom'
 
     # Install Titles (Only set here to override defaults set by the toolkit).
