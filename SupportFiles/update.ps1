@@ -6,7 +6,6 @@ Import-Module "$env:ProgramData\WingetWingman\PSAppDeployToolkit.WinGet\PSAppDep
 
 Write-Output "Starting winget updates at $(Get-Date)"
 
-# First check: Are there any updates available?
 $updatesAvailable = Get-ADTRegistryKey -Key "HKLM:\SOFTWARE\WingetWingman\UpdatesAvailable" -ErrorAction SilentlyContinue
 if (-not $updatesAvailable) {
     Write-Output "No packages flagged for updates. Run scout first or no updates available."
@@ -34,26 +33,15 @@ if ($loggedOnUsers) {
    
     # Check system idle time
     try {
-		$loggedOnUsers = Get-ADTLoggedOnUser
-		$hasActiveUser = $false
-
-		foreach ($User in $loggedOnUsers) {
-			Write-Output "User: $($User.NTAccount) | Idle: $($User.IdleTime.TotalMinutes) min | Console: $($User.IsConsoleSession)"
-			
-			if ($User.IsConsoleSession -and $User.IdleTime.TotalMinutes -lt 60) {
-				$hasActiveUser = $true
-				Write-Output "Console user is active (idle less than 60 minutes)"
-				break
-			}
-		}
-
-		if ($hasActiveUser) {
-			Write-Output "Active user detected - exiting with retry code"
-			Stop-Transcript
-			exit 1
-		}
-
-		Write-Output "All users idle for more than 60 minutes - proceeding with updates"
+        $idleTime = Get-ADTSystemIdleTime
+        $idleHours = $idleTime.TotalHours
+       
+        if ($idleHours -lt 1) {
+            Write-Output "User has been active within the last hour (idle for only $([math]::Round($idleTime.TotalMinutes, 1)) minutes)"
+            Write-Output "Exiting with retry code - task will attempt again in 1 hour"
+            Stop-Transcript
+            exit 1
+        }
         else {
             Write-Output "System has been idle for $([math]::Round($idleHours, 2)) hours - proceeding with updates"
         }
@@ -70,7 +58,28 @@ else {
 
 Write-Output "User activity check passed - proceeding with $($packageNames.Count) package updates..."
 
-# Package update logic (removed duplicate package counting)
+# Get native winget command for fallback
+Function Get-WingetCmd {
+    $WingetCmd = $null
+    try {
+        $WingetInfo = (Get-Item "$env:ProgramFiles\WindowsApps\Microsoft.DesktopAppInstaller_*_8wekyb3d8bbwe\winget.exe").VersionInfo | Sort-Object -Property FileVersionRaw
+        $WingetCmd = $WingetInfo[-1].FileName
+    }
+    catch {
+        if (Test-Path "$env:LocalAppData\Microsoft\WindowsApps\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\winget.exe") {
+            $WingetCmd = "$env:LocalAppData\Microsoft\WindowsApps\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\winget.exe"
+        }
+    }
+    return $WingetCmd
+}
+
+$nativeWinget = Get-WingetCmd
+if ($nativeWinget) {
+    Write-Output "Native winget found at: $nativeWinget"
+} else {
+    Write-Output "Warning: Native winget not found - fallback method unavailable"
+}
+
 $updateResults = @{
     Succeeded = @()
     Failed    = @()
@@ -81,7 +90,6 @@ foreach ($package in $packageNames) {
     Write-Output "========================================"
     Write-Output "Updating package: $package"
     
-    # Get the expected version from scout data
     $scoutData = $updatesAvailable.$package
     $expectedVersion = ($scoutData -split '\|')[0]
     $scoutTimestamp = ($scoutData -split '\|')[1]
@@ -89,36 +97,75 @@ foreach ($package in $packageNames) {
     Write-Output "Expected version: $expectedVersion (flagged: $scoutTimestamp)"
     
     try {
-        $updateResult = Update-ADTWinGetPackage -Id $package -Scope System -Force -ErrorAction Stop
-        Write-Output "Successfully updated $package"
+        $updated = $false
+        try {
+            Write-Output "Attempting update with nullsoft installer (x64)..."
+            $updateResult = Update-ADTWinGetPackage -Id $package -Scope System -Force -InstallerType "nullsoft" -Architecture "x64"
+            Write-Output "Successfully updated $package using nullsoft x64 installer"
+            $updated = $true
+        }
+        catch {
+            Write-Output "nullsoft x64 failed, trying nullsoft x86: $($_.Exception.Message)"
+            try {
+                $updateResult = Update-ADTWinGetPackage -Id $package -Scope System -Force -InstallerType "nullsoft" -Architecture "x86"
+                Write-Output "Successfully updated $package using nullsoft x86 installer"
+                $updated = $true
+            }
+            catch {
+                Write-Output "nullsoft x86 failed, using default installer: $($_.Exception.Message)"
+            }
+        }
+        
+        if (-not $updated) {
+            $updateResult = Update-ADTWinGetPackage -Id $package -Scope System -Force
+            Write-Output "Successfully updated $package using default installer"
+        }
+        
         $updateResults.Succeeded += "$package (to $expectedVersion)"
         
-        # Remove from updates available since it's now updated
         Remove-ADTRegistryKey -Key "HKLM:\SOFTWARE\WingetWingman\UpdatesAvailable" -Name $package -ErrorAction SilentlyContinue
     }
     catch {
         $errorMessage = $_.ToString()
         Write-Output "Update failed for $package with error: $errorMessage"
 
-        # Handle specific error codes
         if ($errorMessage -like "*UPDATE_NOT_APPLICABLE*") {
             Write-Output "No update available - removing from update queue"
             Remove-ADTRegistryKey -Key "HKLM:\SOFTWARE\WingetWingman\UpdatesAvailable" -Name $package -ErrorAction SilentlyContinue
             continue
         }
         elseif ($errorMessage -like "*EXTRACT_ARCHIVE_FAILED*") {
-            Write-Output "Retrying update for $package as user..."
+            Write-Output "Archive extraction failed - trying native winget as last resort..."
             
-            $wingetCmd = "winget upgrade $package --silent --accept-package-agreements --accept-source-agreements"
-            try {
-                Start-ADTProcessAsUser -FilePath "powershell.exe" -Arguments "-WindowStyle Hidden -Command `$ErrorActionPreference='Stop'; $wingetCmd"
-                Write-Output "Successfully updated $package as user"
-                $updateResults.Succeeded += "$package (retried as user)"
-                Remove-ADTRegistryKey -Key "HKLM:\SOFTWARE\WingetWingman\UpdatesAvailable" -Name $package -ErrorAction SilentlyContinue
+            if ($nativeWinget) {
+                try {
+                    Write-Output "Using native winget: $nativeWinget"
+                    $wingetArgs = @("upgrade", $package, "--silent", "--accept-package-agreements", "--accept-source-agreements", "--scope", "machine")
+                    
+                    $process = Start-Process -FilePath $nativeWinget -ArgumentList $wingetArgs -Wait -PassThru -NoNewWindow -RedirectStandardOutput "$env:TEMP\winget_out_$package.txt" -RedirectStandardError "$env:TEMP\winget_err_$package.txt"
+                    
+                    if ($process.ExitCode -eq 0) {
+                        Write-Output "Successfully updated $package using native winget"
+                        $updateResults.Succeeded += "$package (native winget fallback)"
+                        Remove-ADTRegistryKey -Key "HKLM:\SOFTWARE\WingetWingman\UpdatesAvailable" -Name $package -ErrorAction SilentlyContinue
+                    }
+                    else {
+                        $errorOutput = Get-Content "$env:TEMP\winget_err_$package.txt" -Raw -ErrorAction SilentlyContinue
+                        Write-Output "Native winget failed with exit code $($process.ExitCode): $errorOutput"
+                        $updateResults.Failed += "$package (native winget also failed)"
+                    }
+                    
+                    Remove-Item "$env:TEMP\winget_out_$package.txt" -ErrorAction SilentlyContinue
+                    Remove-Item "$env:TEMP\winget_err_$package.txt" -ErrorAction SilentlyContinue
+                }
+                catch {
+                    Write-Output "Native winget fallback failed for ${package}: $_"
+                    $updateResults.Failed += "$package (all methods failed)"
+                }
             }
-            catch {
-                Write-Output "User-context update failed for ${package}: $_"
-                $updateResults.Failed += "$package (both system and user failed)"
+            else {
+                Write-Output "Native winget not available - package update failed"
+                $updateResults.Failed += "$package (extraction failed, no fallback)"
             }
         }
         elseif ($errorMessage -like "*NO_APPLICATIONS_FOUND*") {
