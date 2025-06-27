@@ -6,6 +6,21 @@ Import-Module "$env:ProgramData\WingetWingman\PSAppDeployToolkit.WinGet\PSAppDep
 
 Write-Output "Starting winget updates at $(Get-Date)"
 
+# Function to get native winget command (from detection script)
+Function Get-WingetCmd {
+    $WingetCmd = $null
+    try {
+        $WingetInfo = (Get-Item "$env:ProgramFiles\WindowsApps\Microsoft.DesktopAppInstaller_*_8wekyb3d8bbwe\winget.exe").VersionInfo | Sort-Object -Property FileVersionRaw
+        $WingetCmd = $WingetInfo[-1].FileName
+    }
+    catch {
+        if (Test-Path "$env:LocalAppData\Microsoft\WindowsApps\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\winget.exe") {
+            $WingetCmd = "$env:LocalAppData\Microsoft\WindowsApps\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\winget.exe"
+        }
+    }
+    return $WingetCmd
+}
+
 $updatesAvailable = Get-ADTRegistryKey -Key "HKLM:\SOFTWARE\WingetWingman\UpdatesAvailable" -ErrorAction SilentlyContinue
 if (-not $updatesAvailable) {
     Write-Output "No packages flagged for updates. Run scout first or no updates available."
@@ -24,54 +39,65 @@ if ($packageNames.Count -eq 0) {
 }
 
 Write-Output "Found $($packageNames.Count) packages flagged for updates"
+
 Write-Output "Checking user activity before proceeding with updates..."
 
-# Check if any users are logged on
-$loggedOnUsers = Get-ADTLoggedOnUser
-if ($loggedOnUsers) {
-    Write-Output "Found $($loggedOnUsers.Count) logged on user(s)"
-   
-    # Check system idle time
-    try {
-        $idleTime = Get-ADTSystemIdleTime
-        $idleHours = $idleTime.TotalHours
+$isLocked = $false
+try {
+    $lockApp = Get-Process -Name "LockApp" -ErrorAction SilentlyContinue
+    $logonUI = Get-Process -Name "LogonUI" -ErrorAction SilentlyContinue
+    
+    if ($lockApp -or $logonUI) {
+        $isLocked = $true
+        Write-Output "Computer is locked - proceeding with updates"
+    }
+    else {
+        Write-Output "Computer is not locked - checking user activity"
+    }
+}
+catch {
+    Write-Output "Could not check lock status - checking user activity"
+}
+
+if (-not $isLocked) {
+    $loggedOnUsers = Get-ADTLoggedOnUser
+    if ($loggedOnUsers) {
+        Write-Output "Found $($loggedOnUsers.Count) logged on user(s)"
        
-        if ($idleHours -lt 1) {
-            Write-Output "User has been active within the last hour (idle for only $([math]::Round($idleTime.TotalMinutes, 1)) minutes)"
-            Write-Output "Exiting with retry code - task will attempt again in 1 hour"
+        try {
+            $hasActiveUser = $false
+
+            foreach ($User in $loggedOnUsers) {
+                Write-Output "User: $($User.NTAccount) | Idle: $($User.IdleTime.TotalMinutes) min | Console: $($User.IsConsoleSession)"
+                
+                if ($User.IsConsoleSession -and $User.IdleTime.TotalMinutes -lt 60) {
+                    $hasActiveUser = $true
+                    Write-Output "Console user is active (idle less than 60 minutes)"
+                    break
+                }
+            }
+
+            if ($hasActiveUser) {
+                Write-Output "Active user detected - exiting with retry code"
+                Stop-Transcript
+                exit 1
+            }
+
+            Write-Output "All users idle for more than 60 minutes - proceeding with updates"
+        }
+        catch {
+            Write-Output "Could not determine system idle time - assuming user is active and exiting"
+            Write-Output "Error details: $($_.Exception.Message)"
             Stop-Transcript
             exit 1
         }
-        else {
-            Write-Output "System has been idle for $([math]::Round($idleHours, 2)) hours - proceeding with updates"
-        }
     }
-    catch {
-        Write-Output "Could not determine system idle time - assuming user is active and exiting"
-        Stop-Transcript
-        exit 1
+    else {
+        Write-Output "No users currently logged on - proceeding with updates"
     }
-}
-else {
-    Write-Output "No users currently logged on - proceeding with updates"
 }
 
 Write-Output "User activity check passed - proceeding with $($packageNames.Count) package updates..."
-
-# Get native winget command for fallback
-Function Get-WingetCmd {
-    $WingetCmd = $null
-    try {
-        $WingetInfo = (Get-Item "$env:ProgramFiles\WindowsApps\Microsoft.DesktopAppInstaller_*_8wekyb3d8bbwe\winget.exe").VersionInfo | Sort-Object -Property FileVersionRaw
-        $WingetCmd = $WingetInfo[-1].FileName
-    }
-    catch {
-        if (Test-Path "$env:LocalAppData\Microsoft\WindowsApps\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\winget.exe") {
-            $WingetCmd = "$env:LocalAppData\Microsoft\WindowsApps\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\winget.exe"
-        }
-    }
-    return $WingetCmd
-}
 
 $nativeWinget = Get-WingetCmd
 if ($nativeWinget) {
