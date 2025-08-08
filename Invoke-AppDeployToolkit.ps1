@@ -1,4 +1,4 @@
-﻿<#
+<#
 
 .SYNOPSIS
 PSAppDeployToolkit - This script performs the installation or uninstallation of an application(s).
@@ -160,7 +160,7 @@ function Install-ADTDeployment
 	}
 
 	Write-ADTLogEntry -Message "Checking for Winget-AutoUpdate (WAU)..." -Source $adtSession.DeployAppScriptFriendlyName
-	$wauInstallPath = "C:\Program Files\Winget-AutoUpdate"
+	$wauInstallPath = "$envProgramFiles\Winget-AutoUpdate"
 
 	$wauInstalled = $false
 	$wauNeedsUpdate = $false
@@ -173,12 +173,18 @@ function Install-ADTDeployment
 			
 			try {
 				$latestWAU = Find-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -ErrorAction SilentlyContinue
-				if ($latestWAU -and $latestWAU.Version -ne $installedWAU.Version) {
-					Write-ADTLogEntry -Message "WAU update available: $($installedWAU.Version) → $($latestWAU.Version)" -Source $adtSession.DeployAppScriptFriendlyName
-					$wauNeedsUpdate = $true
+				if ($latestWAU) {
+					$updateNeeded = Compare-WinGetVersions -CurrentVersion $installedWAU.Version -LatestVersion $latestWAU.Version
+					if ($updateNeeded) {
+						Write-ADTLogEntry -Message "WAU update available: $($installedWAU.Version) → $($latestWAU.Version)" -Source $adtSession.DeployAppScriptFriendlyName
+						$wauNeedsUpdate = $true
+					}
+					else {
+						Write-ADTLogEntry -Message "WAU is up to date (Installed: $($installedWAU.Version), Latest: $($latestWAU.Version))" -Source $adtSession.DeployAppScriptFriendlyName
+					}
 				}
 				else {
-					Write-ADTLogEntry -Message "WAU is up to date" -Source $adtSession.DeployAppScriptFriendlyName
+					Write-ADTLogEntry -Message "Could not find WAU in WinGet catalog for version comparison" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
 				}
 			}
 			catch {
@@ -272,7 +278,7 @@ function Install-ADTDeployment
 		Write-ADTLogEntry -Message "AutoUpdate flag enabled - adding $wingetID to WAU whitelist..." -Source $adtSession.DeployAppScriptFriendlyName
 		
 		try {
-			$wauInstallPath = "C:\Program Files\Winget-AutoUpdate"
+			$wauInstallPath = "$envProgramFiles\Winget-AutoUpdate"
 			$includedAppsFile = Join-Path $wauInstallPath "included_apps.txt"
 			
 			if (-not (Test-Path $includedAppsFile)) {
@@ -369,7 +375,7 @@ function Uninstall-ADTDeployment
     Write-ADTLogEntry -Message "Removed $wingetID from Winget Wingman inventory" -Source $adtSession.DeployAppScriptFriendlyName
     
     try {
-        $wauInstallPath = "C:\Program Files\Winget-AutoUpdate"
+        $wauInstallPath = "$envProgramFiles\Winget-AutoUpdate"
         $includedAppsFile = Join-Path $wauInstallPath "included_apps.txt"
         
         if (Test-Path $includedAppsFile) {
@@ -443,7 +449,7 @@ function Uninstall-ADTDeployment
                 Uninstall-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -Force -ErrorAction Stop
                 Write-ADTLogEntry -Message "Successfully uninstalled WAU" -Source $adtSession.DeployAppScriptFriendlyName
                 
-                $wauInstallPath = "C:\Program Files\Winget-AutoUpdate"
+                $wauInstallPath = "$envProgramFiles\Winget-AutoUpdate"
                 if (Test-Path $wauInstallPath) {
                     Remove-ADTFolder -Path $wauInstallPath -ErrorAction SilentlyContinue
                     Write-ADTLogEntry -Message "Cleaned up WAU installation directory" -Source $adtSession.DeployAppScriptFriendlyName
