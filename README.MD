@@ -36,9 +36,11 @@ Basic install:
 Invoke-AppDeployToolkit.exe -wingetID "7zip.7zip" -DeploymentType Install -DeployMode Silent -AutoUpdate
 ```
 
-With custom arguments:
+With custom arguments: Custom arguments can be finicky - test carefully before deploying to end-users
+Since Intune launches via CMD, enclose multiple arguments or strings with spaces in escaped quotes.
+
 ```powershell
-Invoke-AppDeployToolkit.exe -wingetID "Twingate.Client" -Version "20.25.72.347" -Custom "network=company.twingate.com;auto_update=true" -AutoUpdate
+Invoke-AppDeployToolkit.exe -wingetID "Twingate.Client" -Version "20.25.72.347" -Custom "\"network=internal.lan auto_update=true\"" -AutoUpdate
 ```
 
 ## Required Detection Script
@@ -217,4 +219,5 @@ Special thanks to:
 - [Romanitho](https://github.com/Romanitho) for Winget-AutoUpdate
 
 Made for people who want winget deployments that just work.
+
 
