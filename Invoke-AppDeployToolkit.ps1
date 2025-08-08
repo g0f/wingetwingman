@@ -174,7 +174,7 @@ function Install-ADTDeployment
 			try {
 				$latestWAU = Find-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -ErrorAction SilentlyContinue
 				if ($latestWAU) {
-					$updateNeeded = Compare-WinGetVersions -CurrentVersion $installedWAU.Version -LatestVersion $latestWAU.Version
+					$updateNeeded = $installedWAU.Version.Trim() -replace '^[><=\s]+', '' -ne $latestWAU.Version.Trim() -replace '^[><=\s]+', ''
 					if ($updateNeeded) {
 						Write-ADTLogEntry -Message "WAU update available: $($installedWAU.Version) → $($latestWAU.Version)" -Source $adtSession.DeployAppScriptFriendlyName
 						$wauNeedsUpdate = $true
