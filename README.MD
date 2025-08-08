@@ -137,6 +137,7 @@ if ($Apps) {
 | `-Custom` | Custom install arguments | No | - |
 | `-DeploymentType` | Install, Uninstall, or Repair | No | Install |
 | `-DeployMode` | Silent, Interactive, or NonInteractive | No | Silent |
+| `-AllowHashMismatch` | Allows you to download package even when the SHA256 hash for an installer or a dependency does not match the SHA256 hash in the WinGet package manifest. | No | Disabled |
 
 ### Finding WinGet IDs
 To find the correct winget ID for an application:
@@ -219,5 +220,6 @@ Special thanks to:
 - [Romanitho](https://github.com/Romanitho) for Winget-AutoUpdate
 
 Made for people who want winget deployments that just work.
+
 
 
