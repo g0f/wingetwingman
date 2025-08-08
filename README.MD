@@ -152,28 +152,12 @@ Look for the **ID** column in the output.
 
 ## Auto-Update Feature
 
-When `-AutoUpdate` is enabled, WingetWingman sets up two scheduled tasks:
-
-### Scout Task (`winget_wingman_scout`)
-- **Schedule**: Every 5 hours starting at 9 AM
-- **Purpose**: Checks for available updates and flags packages that need updating
-- **Registry**: Stores update flags in `HKLM\Software\WingetWingman\UpdatesAvailable`
-
-### Auto-Update Task (`winget_wingman_auto_update`)
-- **Schedule**: Every 4 hours starting at 6 AM
-- **Purpose**: Updates flagged packages when user has been idle for 1+ hours
-- **Retry Logic**: 6 retries with 1-hour intervals if something goes wrong
-- **Smart Execution**: Only runs when it finds packages flagged by the scout
+When `-AutoUpdate` is enabled, WingetWingman will configure Winget-AutoUpdate by adding the package to the whitelist. It will install Winget-AutoUpdate if it's not already on the machine. It will set the settings to whitelist only, update weekly, and run at logon.
 
 ### Registry Structure
 Applications marked for auto-update are tracked in:
 ```
-HKLM\Software\WingetWingman\AutoUpdate
-```
-
-Update flags are stored in:
-```
-HKLM\Software\WingetWingman\UpdatesAvailable
+HKLM\Software\WingetWingman
 ```
 
 ## File Locations
@@ -182,14 +166,13 @@ HKLM\Software\WingetWingman\UpdatesAvailable
 |------|---------|
 | `C:\ProgramData\WingetWingman` | Update scripts and modules |
 | `C:\ProgramData\WingetWingman\logs` | Scheduled task execution logs |
-| `HKLM\Software\WingetWingman\AutoUpdate` | Registry keys for tracked applications |
-| `HKLM\Software\WingetWingman\UpdatesAvailable` | Registry keys for pending updates |
+| `HKLM\Software\WingetWingman` | Registry keys for tracked applications |
 
 ## Current Version
 
 Based on:
-- **PSAppDeployToolkit**: 4.0.6  
-- **PSAppDeployToolkit.WinGet**: 1.0.4
+- **PSAppDeployToolkit**: 4.1.0  
+- **PSAppDeployToolkit.WinGet**: 1.0.5
 
 ## Important Notes
 
@@ -208,11 +191,6 @@ Based on:
 - Verify the winget ID is correct using `winget search`
 - Review application event logs on target devices
 
-**Auto-update not working**
-- Check Task Scheduler > Winget Wingman folder for both scout and update tasks
-- Review logs in `C:\ProgramData\WingetWingman\logs`
-- Verify registry keys exist in both AutoUpdate and UpdatesAvailable
-
 **Detection script issues**
 - Verify `$AppToDetect` variable matches your application's winget ID
 - Test detection logic manually on target devices
@@ -225,7 +203,7 @@ Based on:
 
 ## License
 
-This project follows the licensing terms of PSAppDeployToolkit, PSAppDeployToolkit.WinGet, and winget-install.
+This project follows the licensing terms of PSAppDeployToolkit, PSAppDeployToolkit.WinGet, and Winget-AutoUpdate.
 
 ## Contributing
 
@@ -236,6 +214,7 @@ Found a bug or have a suggestion? [Open an issue](https://github.com/g0f/wingetw
 Special thanks to:
 - [PSAppDeployToolkit Team](https://github.com/PSAppDeployToolkit/PSAppDeployToolkit)
 - [mjr4077au](https://github.com/mjr4077au) for PSAppDeployToolkit.WinGet
-- [Romanitho](https://github.com/Romanitho) for winget-install scripts
+- [Romanitho](https://github.com/Romanitho) for Winget-AutoUpdate
 
 Made for people who want winget deployments that just work.
+
