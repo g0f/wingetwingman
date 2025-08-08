@@ -80,6 +80,9 @@ param
 	
     [Parameter(Mandatory = $false)]
     [System.Management.Automation.SwitchParameter]$AutoUpdate,
+	
+    [Parameter(Mandatory = $false)]
+    [System.Management.Automation.SwitchParameter]$AllowHashMismatch,
     
     [Parameter(Mandatory = $true)]
     [System.String]$wingetID,
@@ -109,7 +112,7 @@ $adtSession = @{
     AppSuccessExitCodes         = @(0)
     AppRebootExitCodes          = @(1641, 3010)
     AppProcessesToClose         = @()  # Example: @('excel', @{ Name = 'winword'; Description = 'Microsoft Word' })
-    AppScriptVersion            = '1.1.0'
+    AppScriptVersion            = '1.1.1'
     AppScriptDate               = '2025-08-08'
     AppScriptAuthor             = 'Simon Enbom'
     RequireAdmin                = $true
@@ -247,26 +250,28 @@ function Install-ADTDeployment {
     ##================================================
     $adtSession.InstallPhase = $adtSession.DeploymentType
 
+    # Build the install parameters
+    $installParams = @{
+        Id    = $wingetID
+        Force = $true
+    }
+
     if ($Version) {
         Write-ADTLogEntry -Message "Version $Version specified." -Source $adtSession.DeployAppScriptFriendlyName
-    
-        if ($Custom) {
-            Write-ADTLogEntry -Message "Custom arguments specified: $Custom" -Source $adtSession.DeployAppScriptFriendlyName
-            Install-ADTWinGetPackage -Id $wingetID -Version $Version -Custom $Custom -Force
-        }
-        else {
-            Install-ADTWinGetPackage -Id $wingetID -Version $Version -Force
-        }
+        $installParams.Version = $Version
     }
-    else {
-        if ($Custom) {
-            Write-ADTLogEntry -Message "Custom arguments specified: $Custom" -Source $adtSession.DeployAppScriptFriendlyName
-            Install-ADTWinGetPackage -Id $wingetID -Custom $Custom -Force
-        }
-        else {
-            Install-ADTWinGetPackage -Id $wingetID -Force
-        }
+
+    if ($Custom) {
+        Write-ADTLogEntry -Message "Custom arguments specified: $Custom" -Source $adtSession.DeployAppScriptFriendlyName
+        $installParams.Custom = $Custom
     }
+
+    if ($AllowHashMismatch) {
+        Write-ADTLogEntry -Message "AllowHashMismatch flag enabled" -Source $adtSession.DeployAppScriptFriendlyName
+        $installParams.AllowHashMismatch = $true
+    }
+
+    Install-ADTWinGetPackage @installParams
 
     ##================================================
     ## MARK: Post-Install
