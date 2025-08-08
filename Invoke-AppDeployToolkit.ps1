@@ -78,7 +78,7 @@ param
     [Parameter(Mandatory = $false)]
     [System.Management.Automation.SwitchParameter]$DisableLogging,
 	
-	[Parameter(Mandatory = $false)]
+    [Parameter(Mandatory = $false)]
     [System.Management.Automation.SwitchParameter]$AutoUpdate,
     
     [Parameter(Mandatory = $true)]
@@ -100,151 +100,154 @@ param
 # By setting the "AppName" property, Zero-Config MSI will be disabled.
 $adtSession = @{
     # App variables.
-    AppVendor = ''
-    AppName = 'Winget Wingman'
-    AppVersion = ''
-    AppArch = ''
-    AppLang = 'EN'
-    AppRevision = '01'
-    AppSuccessExitCodes = @(0)
-    AppRebootExitCodes = @(1641, 3010)
-    AppProcessesToClose = @()  # Example: @('excel', @{ Name = 'winword'; Description = 'Microsoft Word' })
-    AppScriptVersion = '1.1.0'
-    AppScriptDate = '2025-08-08'
-    AppScriptAuthor = 'Simon Enbom'
-    RequireAdmin = $true
+    AppVendor                   = ''
+    AppName                     = 'Winget Wingman'
+    AppVersion                  = ''
+    AppArch                     = ''
+    AppLang                     = 'EN'
+    AppRevision                 = '01'
+    AppSuccessExitCodes         = @(0)
+    AppRebootExitCodes          = @(1641, 3010)
+    AppProcessesToClose         = @()  # Example: @('excel', @{ Name = 'winword'; Description = 'Microsoft Word' })
+    AppScriptVersion            = '1.1.0'
+    AppScriptDate               = '2025-08-08'
+    AppScriptAuthor             = 'Simon Enbom'
+    RequireAdmin                = $true
 
     # Install Titles (Only set here to override defaults set by the toolkit).
-    InstallName = ''
-    InstallTitle = ''
+    InstallName                 = ''
+    InstallTitle                = ''
 
     # Script variables.
     DeployAppScriptFriendlyName = $MyInvocation.MyCommand.Name
-    DeployAppScriptParameters = $PSBoundParameters
-    DeployAppScriptVersion = '4.1.0'
+    DeployAppScriptParameters   = $PSBoundParameters
+    DeployAppScriptVersion      = '4.1.0'
 }
 
-function Install-ADTDeployment
-{
+function Install-ADTDeployment {
     [CmdletBinding()]
     param
     (
     )
 
-	##================================================
-	## MARK: Pre-Install
-	##================================================
-	$adtSession.InstallPhase = "Pre-$($adtSession.DeploymentType)"
+    ##================================================
+    ## MARK: Pre-Install
+    ##================================================
+    $adtSession.InstallPhase = "Pre-$($adtSession.DeploymentType)"
 
-	try {
-		Write-ADTLogEntry -Message "Verifying WinGet installation..." -Source $adtSession.DeployAppScriptFriendlyName
-		Assert-ADTWinGetPackageManager -ErrorAction Stop
-		Write-ADTLogEntry -Message "WinGet verification successful" -Source $adtSession.DeployAppScriptFriendlyName
-	}
-	catch {
-		Write-ADTLogEntry -Message "WinGet verification failed: $($_.Exception.Message)" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
-		Write-ADTLogEntry -Message "Attempting to repair/install WinGet..." -Source $adtSession.DeployAppScriptFriendlyName
+    try {
+        Write-ADTLogEntry -Message "Verifying WinGet installation..." -Source $adtSession.DeployAppScriptFriendlyName
+        Assert-ADTWinGetPackageManager -ErrorAction Stop
+        Write-ADTLogEntry -Message "WinGet verification successful" -Source $adtSession.DeployAppScriptFriendlyName
+    }
+    catch {
+        Write-ADTLogEntry -Message "WinGet verification failed: $($_.Exception.Message)" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
+        Write-ADTLogEntry -Message "Attempting to repair/install WinGet..." -Source $adtSession.DeployAppScriptFriendlyName
 
-		try {
-			Repair-ADTWinGetPackageManager -ErrorAction Stop
-			Write-ADTLogEntry -Message "WinGet repair completed successfully" -Source $adtSession.DeployAppScriptFriendlyName
-			Write-ADTLogEntry -Message "Re-verifying WinGet after repair..." -Source $adtSession.DeployAppScriptFriendlyName
-			Assert-ADTWinGetPackageManager -ErrorAction Stop
-			Write-ADTLogEntry -Message "WinGet verification successful after repair" -Source $adtSession.DeployAppScriptFriendlyName
-		}
-		catch {
-			Write-ADTLogEntry -Message "WinGet repair failed: $($_.Exception.Message)" -Severity 3 -Source $adtSession.DeployAppScriptFriendlyName
-			Write-ADTLogEntry -Message "Cannot proceed without functional WinGet installation" -Severity 3 -Source $adtSession.DeployAppScriptFriendlyName
-			throw "WinGet installation/repair failed. Cannot continue with deployment."
-		}
-	}
+        try {
+            Repair-ADTWinGetPackageManager -ErrorAction Stop
+            Write-ADTLogEntry -Message "WinGet repair completed successfully" -Source $adtSession.DeployAppScriptFriendlyName
+            Write-ADTLogEntry -Message "Re-verifying WinGet after repair..." -Source $adtSession.DeployAppScriptFriendlyName
+            Assert-ADTWinGetPackageManager -ErrorAction Stop
+            Write-ADTLogEntry -Message "WinGet verification successful after repair" -Source $adtSession.DeployAppScriptFriendlyName
+        }
+        catch {
+            Write-ADTLogEntry -Message "WinGet repair failed: $($_.Exception.Message)" -Severity 3 -Source $adtSession.DeployAppScriptFriendlyName
+            Write-ADTLogEntry -Message "Cannot proceed without functional WinGet installation" -Severity 3 -Source $adtSession.DeployAppScriptFriendlyName
+            throw "WinGet installation/repair failed. Cannot continue with deployment."
+        }
+    }
 
-	Write-ADTLogEntry -Message "Checking for Winget-AutoUpdate (WAU)..." -Source $adtSession.DeployAppScriptFriendlyName
-	$wauInstallPath = "$envProgramFiles\Winget-AutoUpdate"
+    Write-ADTLogEntry -Message "Checking for Winget-AutoUpdate (WAU)..." -Source $adtSession.DeployAppScriptFriendlyName
+    $wauInstallPath = "$envProgramFiles\Winget-AutoUpdate"
 
-	$wauInstalled = $false
-	$wauNeedsUpdate = $false
+    $wauInstalled = $false
+    $wauNeedsUpdate = $false
 
-	try {
-		$installedWAU = Get-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -ErrorAction SilentlyContinue
-		if ($installedWAU) {
-			Write-ADTLogEntry -Message "Found existing WAU installation: Version $($installedWAU.Version)" -Source $adtSession.DeployAppScriptFriendlyName
-			$wauInstalled = $true
+    try {
+        $installedWAU = Get-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -ErrorAction SilentlyContinue
+        if ($installedWAU) {
+            Write-ADTLogEntry -Message "Found existing WAU installation: Version $($installedWAU.Version)" -Source $adtSession.DeployAppScriptFriendlyName
+            $wauInstalled = $true
 			
-			try {
-				$latestWAU = Find-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -ErrorAction SilentlyContinue
-				if ($latestWAU) {
-					$updateNeeded = $installedWAU.Version.Trim() -replace '^[><=\s]+', '' -ne $latestWAU.Version.Trim() -replace '^[><=\s]+', ''
-					if ($updateNeeded) {
-						Write-ADTLogEntry -Message "WAU update available: $($installedWAU.Version) → $($latestWAU.Version)" -Source $adtSession.DeployAppScriptFriendlyName
-						$wauNeedsUpdate = $true
-					}
-					else {
-						Write-ADTLogEntry -Message "WAU is up to date (Installed: $($installedWAU.Version), Latest: $($latestWAU.Version))" -Source $adtSession.DeployAppScriptFriendlyName
-					}
-				}
-				else {
-					Write-ADTLogEntry -Message "Could not find WAU in WinGet catalog for version comparison" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
-				}
-			}
-			catch {
-				Write-ADTLogEntry -Message "Could not check for WAU updates: $($_.Exception.Message)" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
-			}
-		}
-		else {
-			Write-ADTLogEntry -Message "WAU not found - will install" -Source $adtSession.DeployAppScriptFriendlyName
-		}
-	}
-	catch {
-		Write-ADTLogEntry -Message "Error checking WAU installation status: $($_.Exception.Message)" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
-	}
+            try {
+                $latestWAU = Find-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -ErrorAction SilentlyContinue
+                if ($latestWAU) {
+                    $installedClean = $installedWAU.Version.Trim() -replace '^[><=\s]+', ''
+                    $latestClean = $latestWAU.Version.Trim() -replace '^[><=\s]+', ''
+				
+                    Write-ADTLogEntry -Message "Version comparison: Installed='$installedClean' vs Latest='$latestClean'" -Source $adtSession.DeployAppScriptFriendlyName
+				
+                    if ($installedClean -ne $latestClean) {
+                        Write-ADTLogEntry -Message "WAU update available: $($installedWAU.Version) → $($latestWAU.Version)" -Source $adtSession.DeployAppScriptFriendlyName
+                        $wauNeedsUpdate = $true
+                    }
+                    else {
+                        Write-ADTLogEntry -Message "WAU is up to date (Installed: $($installedWAU.Version), Latest: $($latestWAU.Version))" -Source $adtSession.DeployAppScriptFriendlyName
+                    }
+                }
+                else {
+                    Write-ADTLogEntry -Message "Could not find WAU in WinGet catalog for version comparison" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
+                }
+            }
+            catch {
+                Write-ADTLogEntry -Message "Could not check for WAU updates: $($_.Exception.Message)" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
+            }
+        }
+        else {
+            Write-ADTLogEntry -Message "WAU not found - will install" -Source $adtSession.DeployAppScriptFriendlyName
+        }
+    }
+    catch {
+        Write-ADTLogEntry -Message "Error checking WAU installation status: $($_.Exception.Message)" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
+    }
 
-	if (-not $wauInstalled -or $wauNeedsUpdate) {
-		$action = if ($wauInstalled) { "Updating" } else { "Installing" }
-		Write-ADTLogEntry -Message "$action Winget-AutoUpdate to $wauInstallPath..." -Source $adtSession.DeployAppScriptFriendlyName
+    if (-not $wauInstalled -or $wauNeedsUpdate) {
+        $action = if ($wauInstalled) { "Updating" } else { "Installing" }
+        Write-ADTLogEntry -Message "$action Winget-AutoUpdate to $wauInstallPath..." -Source $adtSession.DeployAppScriptFriendlyName
 		
-		try {
-			if ($wauInstalled) {
-				Update-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -Mode Silent -Force -ErrorAction Stop
-				Write-ADTLogEntry -Message "Successfully updated WAU" -Source $adtSession.DeployAppScriptFriendlyName
-			}
-			else {
-				Install-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -Mode Silent -Force -ErrorAction Stop
-				Write-ADTLogEntry -Message "Successfully installed WAU to default location" -Source $adtSession.DeployAppScriptFriendlyName
-			}
+        try {
+            if ($wauInstalled) {
+                Update-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -Mode Silent -Force -ErrorAction Stop
+                Write-ADTLogEntry -Message "Successfully updated WAU" -Source $adtSession.DeployAppScriptFriendlyName
+            }
+            else {
+                Install-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -Mode Silent -Force -ErrorAction Stop
+                Write-ADTLogEntry -Message "Successfully installed WAU to default location" -Source $adtSession.DeployAppScriptFriendlyName
+            }
 			
-			Write-ADTLogEntry -Message "Configuring WAU settings: Notifications=None, UpdateInterval=Weekly" -Source $adtSession.DeployAppScriptFriendlyName
-			$wauRegistryPath = "HKLM:\SOFTWARE\Romanitho\Winget-AutoUpdate"
+            Write-ADTLogEntry -Message "Configuring WAU settings: Notifications=None, UpdateInterval=Weekly" -Source $adtSession.DeployAppScriptFriendlyName
+            $wauRegistryPath = "HKLM:\SOFTWARE\Romanitho\Winget-AutoUpdate"
 			
-			Set-ADTRegistryKey -Key $wauRegistryPath -Name "WAU_NotificationLevel" -Value "None" -Type String
-			Set-ADTRegistryKey -Key $wauRegistryPath -Name "WAU_UpdatesInterval" -Value "Weekly" -Type String
-			Set-ADTRegistryKey -Key $wauRegistryPath -Name "WAU_UseWhiteList" -Value "1" -Type String
+            Set-ADTRegistryKey -Key $wauRegistryPath -Name "WAU_NotificationLevel" -Value "None" -Type String
+            Set-ADTRegistryKey -Key $wauRegistryPath -Name "WAU_UpdatesInterval" -Value "Weekly" -Type String
+            Set-ADTRegistryKey -Key $wauRegistryPath -Name "WAU_UseWhiteList" -Value "1" -Type String
 			
-			Write-ADTLogEntry -Message "WAU configuration completed" -Source $adtSession.DeployAppScriptFriendlyName
+            Write-ADTLogEntry -Message "WAU configuration completed" -Source $adtSession.DeployAppScriptFriendlyName
 			
-			Start-Sleep -Seconds 5
-			$verifyWAU = Get-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -ErrorAction SilentlyContinue
-			if ($verifyWAU) {
-				Write-ADTLogEntry -Message "WAU installation verified: Version $($verifyWAU.Version)" -Source $adtSession.DeployAppScriptFriendlyName
-			}
-			else {
-				Write-ADTLogEntry -Message "Warning: Could not verify WAU installation via WinGet" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
-			}
-		}
-		catch {
-			Write-ADTLogEntry -Message "Failed to $($action.ToLower()) WAU: $($_.Exception.Message)" -Severity 3 -Source $adtSession.DeployAppScriptFriendlyName
-			throw "WAU installation/update failed. Cannot continue with deployment."
-		}
-	}
-	else {
-		Write-ADTLogEntry -Message "WAU is already installed and up to date" -Source $adtSession.DeployAppScriptFriendlyName
-	}
+            Start-Sleep -Seconds 5
+            $verifyWAU = Get-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -ErrorAction SilentlyContinue
+            if ($verifyWAU) {
+                Write-ADTLogEntry -Message "WAU installation verified: Version $($verifyWAU.Version)" -Source $adtSession.DeployAppScriptFriendlyName
+            }
+            else {
+                Write-ADTLogEntry -Message "Warning: Could not verify WAU installation via WinGet" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
+            }
+        }
+        catch {
+            Write-ADTLogEntry -Message "Failed to $($action.ToLower()) WAU: $($_.Exception.Message)" -Severity 3 -Source $adtSession.DeployAppScriptFriendlyName
+            throw "WAU installation/update failed. Cannot continue with deployment."
+        }
+    }
+    else {
+        Write-ADTLogEntry -Message "WAU is already installed and up to date" -Source $adtSession.DeployAppScriptFriendlyName
+    }
     ##================================================
     ## MARK: Install
     ##================================================
     $adtSession.InstallPhase = $adtSession.DeploymentType
 
-  if ($Version) {
+    if ($Version) {
         Write-ADTLogEntry -Message "Version $Version specified." -Source $adtSession.DeployAppScriptFriendlyName
     
         if ($Custom) {
@@ -265,57 +268,56 @@ function Install-ADTDeployment
         }
     }
 
-	##================================================
-	## MARK: Post-Install
-	##================================================
-	$adtSession.InstallPhase = "Post-$($adtSession.DeploymentType)"
+    ##================================================
+    ## MARK: Post-Install
+    ##================================================
+    $adtSession.InstallPhase = "Post-$($adtSession.DeploymentType)"
 	
-	$registryPath = "HKLM:\SOFTWARE\WingetWingman"
-	Set-ADTRegistryKey -Key $registryPath -Name $wingetID -Value (Get-Date -Format "yyyy-MM-dd HH:mm:ss") -Type String
-	Write-ADTLogEntry -Message "Registered $wingetID in Winget Wingman inventory" -Source $adtSession.DeployAppScriptFriendlyName
+    $registryPath = "HKLM:\SOFTWARE\WingetWingman"
+    Set-ADTRegistryKey -Key $registryPath -Name $wingetID -Value (Get-Date -Format "yyyy-MM-dd HH:mm:ss") -Type String
+    Write-ADTLogEntry -Message "Registered $wingetID in Winget Wingman inventory" -Source $adtSession.DeployAppScriptFriendlyName
 
-	if ($AutoUpdate) {
-		Write-ADTLogEntry -Message "AutoUpdate flag enabled - adding $wingetID to WAU whitelist..." -Source $adtSession.DeployAppScriptFriendlyName
+    if ($AutoUpdate) {
+        Write-ADTLogEntry -Message "AutoUpdate flag enabled - adding $wingetID to WAU whitelist..." -Source $adtSession.DeployAppScriptFriendlyName
 		
-		try {
-			$wauInstallPath = "$envProgramFiles\Winget-AutoUpdate"
-			$includedAppsFile = Join-Path $wauInstallPath "included_apps.txt"
+        try {
+            $wauInstallPath = "$envProgramFiles\Winget-AutoUpdate"
+            $includedAppsFile = Join-Path $wauInstallPath "included_apps.txt"
 			
-			if (-not (Test-Path $includedAppsFile)) {
-				New-Item -Path $includedAppsFile -ItemType File -Force | Out-Null
-				Write-ADTLogEntry -Message "Created WAU included_apps.txt file" -Source $adtSession.DeployAppScriptFriendlyName
-			}
+            if (-not (Test-Path $includedAppsFile)) {
+                New-Item -Path $includedAppsFile -ItemType File -Force | Out-Null
+                Write-ADTLogEntry -Message "Created WAU included_apps.txt file" -Source $adtSession.DeployAppScriptFriendlyName
+            }
 			
-			$existingApps = @()
-			if (Test-Path $includedAppsFile) {
-				$existingApps = Get-Content $includedAppsFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() -ne "" }
-			}
+            $existingApps = @()
+            if (Test-Path $includedAppsFile) {
+                $existingApps = Get-Content $includedAppsFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() -ne "" }
+            }
 			
-			if ($wingetID -notin $existingApps) {
-				Add-Content -Path $includedAppsFile -Value $wingetID -Encoding UTF8
-				Write-ADTLogEntry -Message "Added $wingetID to WAU whitelist" -Source $adtSession.DeployAppScriptFriendlyName
-			}
-			else {
-				Write-ADTLogEntry -Message "$wingetID already in WAU whitelist" -Source $adtSession.DeployAppScriptFriendlyName
-			}
+            if ($wingetID -notin $existingApps) {
+                Add-Content -Path $includedAppsFile -Value $wingetID -Encoding UTF8
+                Write-ADTLogEntry -Message "Added $wingetID to WAU whitelist" -Source $adtSession.DeployAppScriptFriendlyName
+            }
+            else {
+                Write-ADTLogEntry -Message "$wingetID already in WAU whitelist" -Source $adtSession.DeployAppScriptFriendlyName
+            }
 			
-			$currentApps = Get-Content $includedAppsFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() -ne "" }
-			Write-ADTLogEntry -Message "WAU whitelist now contains $($currentApps.Count) apps: $($currentApps -join ', ')" -Source $adtSession.DeployAppScriptFriendlyName
+            $currentApps = Get-Content $includedAppsFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() -ne "" }
+            Write-ADTLogEntry -Message "WAU whitelist now contains $($currentApps.Count) apps: $($currentApps -join ', ')" -Source $adtSession.DeployAppScriptFriendlyName
 			
-			Write-ADTLogEntry -Message "Successfully configured $wingetID for WAU auto-update management" -Source $adtSession.DeployAppScriptFriendlyName
-		}
-		catch {
-			Write-ADTLogEntry -Message "Failed to add $wingetID to WAU whitelist: $($_.Exception.Message)" -Severity 3 -Source $adtSession.DeployAppScriptFriendlyName
-			throw "Failed to configure auto-update for $wingetID"
-		}
-	}
-	else {
-		Write-ADTLogEntry -Message "AutoUpdate flag not enabled - $wingetID will not be auto-updated" -Source $adtSession.DeployAppScriptFriendlyName
-	}
+            Write-ADTLogEntry -Message "Successfully configured $wingetID for WAU auto-update management" -Source $adtSession.DeployAppScriptFriendlyName
+        }
+        catch {
+            Write-ADTLogEntry -Message "Failed to add $wingetID to WAU whitelist: $($_.Exception.Message)" -Severity 3 -Source $adtSession.DeployAppScriptFriendlyName
+            throw "Failed to configure auto-update for $wingetID"
+        }
+    }
+    else {
+        Write-ADTLogEntry -Message "AutoUpdate flag not enabled - $wingetID will not be auto-updated" -Source $adtSession.DeployAppScriptFriendlyName
+    }
 }
 
-function Uninstall-ADTDeployment
-{
+function Uninstall-ADTDeployment {
     [CmdletBinding()]
     param
     (
@@ -331,38 +333,38 @@ function Uninstall-ADTDeployment
     ##================================================
     $adtSession.InstallPhase = $adtSession.DeploymentType
     
-	Write-ADTLogEntry -Message "Uninstalling application: $wingetID" -Source $adtSession.DeployAppScriptFriendlyName
+    Write-ADTLogEntry -Message "Uninstalling application: $wingetID" -Source $adtSession.DeployAppScriptFriendlyName
 
-	try {
-	   Assert-ADTWinGetPackageManager -ErrorAction Stop
-	}
-	catch {
-	   Write-ADTLogEntry -Message "WinGet not available, attempting repair..." -Source $adtSession.DeployAppScriptFriendlyName
-	   Repair-ADTWinGetPackageManager
-	}
+    try {
+        Assert-ADTWinGetPackageManager -ErrorAction Stop
+    }
+    catch {
+        Write-ADTLogEntry -Message "WinGet not available, attempting repair..." -Source $adtSession.DeployAppScriptFriendlyName
+        Repair-ADTWinGetPackageManager
+    }
 
-	try {
-	   Uninstall-ADTWinGetPackage -Id $wingetID -Force -Scope System
-	}
-	catch {
-	   if ($_.Exception.Message -like "*NO_APPLICATIONS_FOUND*") {
-		   Uninstall-ADTWinGetPackage -Id $wingetID -Force -Scope User
-	   }
-	   else {
-		   throw
-	   }
-	}
+    try {
+        Uninstall-ADTWinGetPackage -Id $wingetID -Force -Scope System
+    }
+    catch {
+        if ($_.Exception.Message -like "*NO_APPLICATIONS_FOUND*") {
+            Uninstall-ADTWinGetPackage -Id $wingetID -Force -Scope User
+        }
+        else {
+            throw
+        }
+    }
 
-	if ($DeployMode -eq "Silent") {
-	   Start-Sleep -Seconds 60
-	   $stillInstalled = Get-ADTWinGetPackage -Id $wingetID -ErrorAction SilentlyContinue
-	   if ($stillInstalled) {
-		   Write-ADTLogEntry -Message "The silent uninstall for $($stillInstalled.Name) did not complete successfully.`n`nUpdate the Intune uninstall command to use Interactive mode instead of Silent mode." -Source $adtSession.DeployAppScriptFriendlyName
-		   throw "Uninstall reported success but package is still installed - manual intervention required"
-	   }
-	}
+    if ($DeployMode -eq "Silent") {
+        Start-Sleep -Seconds 60
+        $stillInstalled = Get-ADTWinGetPackage -Id $wingetID -ErrorAction SilentlyContinue
+        if ($stillInstalled) {
+            Write-ADTLogEntry -Message "The silent uninstall for $($stillInstalled.Name) did not complete successfully.`n`nUpdate the Intune uninstall command to use Interactive mode instead of Silent mode." -Source $adtSession.DeployAppScriptFriendlyName
+            throw "Uninstall reported success but package is still installed - manual intervention required"
+        }
+    }
 
-	Write-ADTLogEntry -Message "Application $wingetID uninstalled successfully" -Source $adtSession.DeployAppScriptFriendlyName
+    Write-ADTLogEntry -Message "Application $wingetID uninstalled successfully" -Source $adtSession.DeployAppScriptFriendlyName
 
     ##================================================
     ## MARK: Post-Uninstallation
@@ -429,7 +431,7 @@ function Uninstall-ADTDeployment
             
             $legacyFolders = @(
                 "$envAllUsersProfile\WingetWingman",
-				"$envAllUsersProfile\Winget-AutoUpdate"
+                "$envAllUsersProfile\Winget-AutoUpdate"
             )
             
             foreach ($folder in $legacyFolders) {
@@ -471,8 +473,7 @@ function Uninstall-ADTDeployment
     }
 }
 
-function Repair-ADTDeployment
-{
+function Repair-ADTDeployment {
     [CmdletBinding()]
     param
     (
@@ -506,16 +507,13 @@ $ProgressPreference = [System.Management.Automation.ActionPreference]::SilentlyC
 Set-StrictMode -Version 1
 
 # Import the module and instantiate a new session.
-try
-{
+try {
     # Import the module locally if available, otherwise try to find it from PSModulePath.
-    if (Test-Path -LiteralPath "$PSScriptRoot\PSAppDeployToolkit\PSAppDeployToolkit.psd1" -PathType Leaf)
-    {
+    if (Test-Path -LiteralPath "$PSScriptRoot\PSAppDeployToolkit\PSAppDeployToolkit.psd1" -PathType Leaf) {
         Get-ChildItem -LiteralPath "$PSScriptRoot\PSAppDeployToolkit" -Recurse -File | Unblock-File -ErrorAction Ignore
         Import-Module -FullyQualifiedName @{ ModuleName = "$PSScriptRoot\PSAppDeployToolkit\PSAppDeployToolkit.psd1"; Guid = '8c3c366b-8606-4576-9f2d-4051144f7ca2'; ModuleVersion = '4.1.0' } -Force
     }
-    else
-    {
+    else {
         Import-Module -FullyQualifiedName @{ ModuleName = 'PSAppDeployToolkit'; Guid = '8c3c366b-8606-4576-9f2d-4051144f7ca2'; ModuleVersion = '4.1.0' } -Force
     }
 
@@ -524,8 +522,7 @@ try
     $adtSession = Remove-ADTHashtableNullOrEmptyValues -Hashtable $adtSession
     $adtSession = Open-ADTSession @adtSession @iadtParams -PassThru
 }
-catch
-{
+catch {
     $Host.UI.WriteErrorLine((Out-String -InputObject $_ -Width ([System.Int32]::MaxValue)))
     exit 60008
 }
@@ -536,14 +533,11 @@ catch
 ##================================================
 
 # Commence the actual deployment operation.
-try
-{
+try {
     # Import any found extensions before proceeding with the deployment.
     Get-ChildItem -LiteralPath $PSScriptRoot -Directory | & {
-        process
-        {
-            if ($_.Name -match 'PSAppDeployToolkit\..+$')
-            {
+        process {
+            if ($_.Name -match 'PSAppDeployToolkit\..+$') {
                 Get-ChildItem -LiteralPath $_.FullName -Recurse -File | Unblock-File -ErrorAction Ignore
                 Import-Module -Name $_.FullName -Force
             }
@@ -554,8 +548,7 @@ try
     & "$($adtSession.DeploymentType)-ADTDeployment"
     Close-ADTSession
 }
-catch
-{
+catch {
     # An unhandled error has been caught.
     $mainErrorMessage = "An unhandled error within [$($MyInvocation.MyCommand.Name)] has occurred.`n$(Resolve-ADTErrorRecord -ErrorRecord $_)"
     Write-ADTLogEntry -Message $mainErrorMessage -Severity 3
