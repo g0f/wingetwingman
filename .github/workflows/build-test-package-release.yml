@@ -174,8 +174,10 @@ jobs:
           # Read the current script
           $content = Get-Content $scriptPath -Raw
           
+          # Update ONLY AppScriptVersion (not DeployAppScriptVersion)
           $content = $content -replace '\bAppScriptVersion(\s*=\s*'')[^'']*', "AppScriptVersion`${1}$version"
           
+          # Update the AppScriptDate to today
           $today = Get-Date -Format "yyyy-MM-dd"
           $content = $content -replace '(AppScriptDate\s*=\s*'')[^'']*', "`${1}$today"
           
@@ -301,7 +303,7 @@ jobs:
           $sourceFolder = ".\WingetWingman-Package"
           $setupFile = "Invoke-AppDeployToolkit.ps1"
           $outputFolder = ".\Output"
-          $outputFile = "WingetWingman-v$version.intunewin"
+          $outputFile = "WingetWingman-$version.intunewin"
           
           # Create output directory
           New-Item -Path $outputFolder -ItemType Directory -Force
@@ -375,8 +377,8 @@ jobs:
       - name: Upload package as artifact (for dry run testing)
         uses: actions/upload-artifact@v4
         with:
-          name: "WingetWingman-v${{ inputs.version }}-Package"
-          path: "./Output/WingetWingman-v${{ inputs.version }}.intunewin"
+          name: "WingetWingman-${{ inputs.version }}-Package"
+          path: "./Output/WingetWingman-${{ inputs.version }}.intunewin"
           retention-days: 30
 
       - name: Create GitHub Release
@@ -421,7 +423,7 @@ jobs:
             Invoke-AppDeployToolkit.exe -wingetID "Twingate.Client" -DeploymentType Install -DeployMode Silent -Custom "\" network=internal.lan auto_update=true\""
             ```
           files: |
-            ./Output/WingetWingman-v${{ inputs.version }}.intunewin
+            ./Output/WingetWingman-${{ inputs.version }}.intunewin
           draft: false
           prerelease: false
         env:
