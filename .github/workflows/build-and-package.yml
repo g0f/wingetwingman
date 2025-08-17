@@ -435,11 +435,11 @@ jobs:
             # Rename to our desired name
             $finalPath = Join-Path $outputFolder $outputFile
             Move-Item $createdPackage.FullName $finalPath -Force
-            Write-Host "✅ Package created: $finalPath"
+            Write-Host "Package created: $finalPath"
             
             # Get file size
             $fileSize = [math]::Round((Get-Item $finalPath).Length / 1MB, 2)
-            Write-Host "📊 Package size: $fileSize MB"
+            Write-Host "Package size: $fileSize MB"
           } else {
             throw "❌ Package creation failed - no .intunewin file found"
           }
