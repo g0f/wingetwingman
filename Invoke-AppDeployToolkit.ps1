@@ -182,7 +182,7 @@ function Install-ADTDeployment {
                     Write-ADTLogEntry -Message "Version comparison: Installed='$installedClean' vs Latest='$latestClean'" -Source $adtSession.DeployAppScriptFriendlyName
 				
                     if ($installedClean -ne $latestClean) {
-                        Write-ADTLogEntry -Message "WAU update available: $($installedWAU.Version) → $($latestWAU.Version)" -Source $adtSession.DeployAppScriptFriendlyName
+                        Write-ADTLogEntry -Message "WAU update available: $($installedWAU.Version) -> $($latestWAU.Version)" -Source $adtSession.DeployAppScriptFriendlyName
                         $wauNeedsUpdate = $true
                     }
                     else {
