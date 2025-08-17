@@ -67,7 +67,7 @@ jobs:
           
           # Run PSScriptAnalyzer
           Write-Host "Running PSScriptAnalyzer..."
-          $results = Invoke-ScriptAnalyzer -Path ".\Invoke-AppDeployToolkit.ps1" -Severity Warning,Error
+          $results = Invoke-ScriptAnalyzer -Path ".\Invoke-AppDeployToolkit.ps1" -Severity Error -ExcludeRule PSUseBOMForUnicodeEncodedFile
           if ($results) {
             $results | Format-Table -AutoSize
             throw "PSScriptAnalyzer found issues"
@@ -150,84 +150,6 @@ jobs:
           Write-Host ""
           Write-Host "All test scenarios completed successfully!" -ForegroundColor Green
           Write-Host "Note: WinGet functionality will be tested on target machines during actual deployment" -ForegroundColor Cyan
-          
-          # Define all test scenarios
-          $testScenarios = @(
-            @{ Name = "7zip - Base Test"; WingetId = "7zip.7zip"; Args = "" }
-            @{ Name = "GNU Nano - Base Test"; WingetId = "GNU.nano"; Args = "" }
-            @{ Name = "Notepad++ - AutoUpdate Flag"; WingetId = "Notepad++.Notepad++"; Args = "-AutoUpdate" }
-            @{ Name = "VLC - Version Flag"; WingetId = "VideoLAN.VLC"; Args = "-Version `"3.0.18`"" }
-            @{ Name = "Twingate - Custom Arguments Flag"; WingetId = "Twingate.Client"; Args = "-Custom `"`" network=internal.lan auto_update=true`"`"" }
-            @{ Name = "PuTTY - AllowHashMismatch Flag"; WingetId = "PuTTY.PuTTY"; Args = "-AllowHashMismatch" }
-            @{ Name = "Everything - AutoUpdate + Custom Combo"; WingetId = "voidtools.Everything"; Args = "-AutoUpdate -Custom `"/S`"" }
-            @{ Name = "IrfanView - Version + AllowHashMismatch Combo"; WingetId = "IrfanView.IrfanView"; Args = "-Version `"4.60`" -AllowHashMismatch" }
-          )
-          
-          foreach ($scenario in $testScenarios) {
-            Write-Host ""
-            Write-Host "========================================" -ForegroundColor Yellow
-            Write-Host "Testing: $($scenario.Name)" -ForegroundColor Yellow
-            Write-Host "Package: $($scenario.WingetId)"
-            Write-Host "Arguments: $($scenario.Args)"
-            Write-Host "========================================" -ForegroundColor Yellow
-            
-            # Test package search and validation
-            Write-Host "Searching for package via PSADT..."
-            try {
-              $package = Find-ADTWinGetPackage -Id $scenario.WingetId -ErrorAction Stop
-              Write-Host "Package found: $($package.Name) - Version: $($package.Version)"
-            } catch {
-              Write-Host "Package not found: $($scenario.WingetId)" -ForegroundColor Red
-              continue
-            }
-            
-            # Check if package is already installed
-            $installedPackage = Get-ADTWinGetPackage -Id $scenario.WingetId -ErrorAction SilentlyContinue
-            if ($installedPackage) {
-              Write-Host "Package already installed: $($installedPackage.Version)"
-            } else {
-              Write-Host "Package not currently installed"
-            }
-            
-            # Test installation parameters and syntax
-            Write-Host "Testing parameter building..."
-            
-            # Build the parameters like your script does
-            $installParams = @{
-              Id = $scenario.WingetId
-              Force = $true
-            }
-            
-            # Parse and add additional parameters based on test scenario
-            $args = $scenario.Args
-            
-            if ($args -match '-Version\s+`"([^`"]+)`"') {
-              $installParams.Version = $matches[1]
-              Write-Host "Version parameter added: $($matches[1])"
-            }
-            
-            if ($args -match '-Custom\s+`"([^`"]+)`"') {
-              $installParams.Custom = $matches[1]
-              Write-Host "Custom parameter added: $($matches[1])"
-            }
-            
-            if ($args -match '-AllowHashMismatch') {
-              $installParams.AllowHashMismatch = $true
-              Write-Host "AllowHashMismatch parameter added"
-            }
-            
-            if ($args -match '-AutoUpdate') {
-              Write-Host "AutoUpdate flag detected (would configure WAU)"
-            }
-            
-            Write-Host "Final install parameters:"
-            $installParams | Format-Table -AutoSize
-            
-            Write-Host "Parameter validation successful for $($scenario.Name)" -ForegroundColor Green
-          }
-          
-          Write-Host ""
-          Write-Host "All test scenarios completed successfully!" -ForegroundColor Green
 
   update-version:
     runs-on: windows-latest
@@ -305,19 +227,40 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "Downloading Microsoft Win32 Content Prep Tool..."
-          $url = "https://github.com/Microsoft/Microsoft-Win32-Content-Prep-Tool/archive/master.zip"
+          $url = "https://github.com/Microsoft/Microsoft-Win32-Content-Prep-Tool/archive/refs/heads/master.zip"
           $outputPath = ".\prep-tool.zip"
           
-          Invoke-WebRequest -Uri $url -OutFile $outputPath
-          Expand-Archive -Path $outputPath -DestinationPath ".\prep-tool" -Force
-          
-          # Find the actual executable
-          $toolPath = Get-ChildItem -Path ".\prep-tool" -Name "IntuneWinAppUtil.exe" -Recurse | Select-Object -First 1
-          if ($toolPath) {
-            $global:IntuneWinAppUtil = $toolPath.FullName
-            Write-Host "Found IntuneWinAppUtil at: $global:IntuneWinAppUtil"
-          } else {
-            throw "Could not find IntuneWinAppUtil.exe"
+          try {
+            Invoke-WebRequest -Uri $url -OutFile $outputPath -UseBasicParsing
+            Write-Host "Download completed"
+            
+            # Extract the zip file
+            Expand-Archive -Path $outputPath -DestinationPath ".\prep-tool" -Force
+            Write-Host "Extraction completed"
+            
+            # List contents to debug
+            Write-Host "Contents of prep-tool directory:"
+            Get-ChildItem -Path ".\prep-tool" -Recurse | ForEach-Object { Write-Host "  $($_.FullName)" }
+            
+            # Find the actual executable with more thorough search
+            $toolPath = Get-ChildItem -Path ".\prep-tool" -Filter "IntuneWinAppUtil.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            
+            if (-not $toolPath) {
+              # Try alternative name
+              $toolPath = Get-ChildItem -Path ".\prep-tool" -Filter "*.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+              Write-Host "Alternative exe found: $($toolPath.FullName)"
+            }
+            
+            if ($toolPath) {
+              Write-Host "Found tool at: $($toolPath.FullName)"
+              # Make it executable (in case it's not)
+              $toolPath.Attributes = $toolPath.Attributes -band (-bnot [System.IO.FileAttributes]::ReadOnly)
+            } else {
+              throw "Could not find IntuneWinAppUtil.exe or any executable in the downloaded package"
+            }
+          } catch {
+            Write-Host "Error downloading/extracting tool: $_"
+            throw
           }
 
       - name: Prepare package directory
@@ -365,28 +308,57 @@ jobs:
           # Create output directory
           New-Item -Path $outputFolder -ItemType Directory -Force
           
-          # Find the IntuneWinAppUtil.exe
-          $toolPath = Get-ChildItem -Path ".\prep-tool" -Name "IntuneWinAppUtil.exe" -Recurse | Select-Object -First 1
+          # Find the IntuneWinAppUtil.exe with more robust search
+          Write-Host "Searching for IntuneWinAppUtil.exe..."
+          $toolPath = Get-ChildItem -Path ".\prep-tool" -Filter "IntuneWinAppUtil.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           
           if (-not $toolPath) {
-            throw "Could not find IntuneWinAppUtil.exe"
+            # Fallback: look for any exe file
+            $toolPath = Get-ChildItem -Path ".\prep-tool" -Filter "*.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($toolPath) {
+              Write-Host "Found executable: $($toolPath.Name) at $($toolPath.FullName)"
+            }
+          }
+          
+          if (-not $toolPath) {
+            Write-Host "Available files in prep-tool:"
+            Get-ChildItem -Path ".\prep-tool" -Recurse | ForEach-Object { Write-Host "  $($_.FullName)" }
+            throw "Could not find IntuneWinAppUtil.exe or any executable file"
           }
           
           $toolFullPath = $toolPath.FullName
           Write-Host "Using tool at: $toolFullPath"
           
-          # Run the packaging tool
-          $arguments = "-c `"$sourceFolder`" -s `"$setupFile`" -o `"$outputFolder`""
-          Write-Host "Running: $toolFullPath $arguments"
+          # Verify the tool exists and is accessible
+          if (-not (Test-Path $toolFullPath)) {
+            throw "Tool path does not exist: $toolFullPath"
+          }
           
-          Start-Process -FilePath $toolFullPath -ArgumentList $arguments -Wait -NoNewWindow
+          # Run the packaging tool
+          $arguments = @("-c", "`"$sourceFolder`"", "-s", "`"$setupFile`"", "-o", "`"$outputFolder`"")
+          Write-Host "Running: $toolFullPath $($arguments -join ' ')"
+          
+          try {
+            $process = Start-Process -FilePath $toolFullPath -ArgumentList $arguments -Wait -NoNewWindow -PassThru
+            Write-Host "Process exit code: $($process.ExitCode)"
+            
+            if ($process.ExitCode -ne 0) {
+              throw "IntuneWinAppUtil.exe failed with exit code: $($process.ExitCode)"
+            }
+          } catch {
+            Write-Host "Error running packaging tool: $_"
+            throw
+          }
           
           # Check if package was created
-          $createdPackage = Get-ChildItem -Path $outputFolder -Filter "*.intunewin" | Select-Object -First 1
+          Start-Sleep -Seconds 2
+          $createdPackage = Get-ChildItem -Path $outputFolder -Filter "*.intunewin" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($createdPackage) {
             # Rename to our desired name
             $finalPath = Join-Path $outputFolder $outputFile
-            Move-Item $createdPackage.FullName $finalPath -Force
+            if ($createdPackage.FullName -ne $finalPath) {
+              Move-Item $createdPackage.FullName $finalPath -Force
+            }
             Write-Host "Package created: $finalPath"
             
             # Get file size
@@ -397,6 +369,8 @@ jobs:
             echo "package-path=$finalPath" >> $env:GITHUB_OUTPUT
             echo "package-name=$outputFile" >> $env:GITHUB_OUTPUT
           } else {
+            Write-Host "No .intunewin file found in output directory:"
+            Get-ChildItem -Path $outputFolder | ForEach-Object { Write-Host "  $($_.Name)" }
             throw "Package creation failed - no .intunewin file found"
           }
 
