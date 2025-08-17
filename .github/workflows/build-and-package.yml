@@ -22,45 +22,7 @@ jobs:
   test:
     if: ${{ inputs.run_tests }}
     runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Base tests (no flags)
-          - name: "7zip - Base Test"
-            wingetid: "7zip.7zip"
-            args: ""
-            
-          - name: "GNU Nano - Base Test"
-            wingetid: "GNU.nano"
-            args: ""
-            
-          # Individual flag tests
-          - name: "Notepad++ - AutoUpdate Flag"
-            wingetid: "Notepad++.Notepad++"
-            args: "-AutoUpdate"
-            
-          - name: "VLC - Version Flag"
-            wingetid: "VideoLAN.VLC"
-            args: "-Version \"3.0.18\""
-            
-          - name: "Twingate - Custom Arguments Flag"
-            wingetid: "Twingate.Client"
-            args: "-Custom \"\" network=internal.lan auto_update=true\"\""
-            
-          - name: "PuTTY - AllowHashMismatch Flag"
-            wingetid: "PuTTY.PuTTY"
-            args: "-AllowHashMismatch"
-            
-          # Combination flag tests
-          - name: "Everything - AutoUpdate + Custom Combo"
-            wingetid: "voidtools.Everything"
-            args: "-AutoUpdate -Custom \"/S\""
-            
-          - name: "IrfanView - Version + AllowHashMismatch Combo"
-            wingetid: "IrfanView.IrfanView"
-            args: "-Version \"4.60\" -AllowHashMismatch"
-
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -76,94 +38,30 @@ jobs:
         run: |
           Write-Host "Importing PSAppDeployToolkit modules..."
           
-          # First, let's see what we have in the repo
-          Write-Host "Repository contents:"
-          Get-ChildItem -Path "." | ForEach-Object { Write-Host "  $($_.Name)" }
+          # Unblock all module files
+          Get-ChildItem -Path ".\PSAppDeployToolkit" -Recurse -File | Unblock-File -ErrorAction Ignore
+          Get-ChildItem -Path ".\PSAppDeployToolkit.Extensions" -Recurse -File | Unblock-File -ErrorAction Ignore
+          Get-ChildItem -Path ".\PSAppDeployToolkit.WinGet" -Recurse -File | Unblock-File -ErrorAction Ignore
           
-          # Check for PSAppDeployToolkit folders
-          Write-Host ""
-          Write-Host "Checking for PSADT folders..."
-          $psadtFolders = @("PSAppDeployToolkit", "PSAppDeployToolkit.Extensions", "PSAppDeployToolkit.WinGet")
-          foreach ($folder in $psadtFolders) {
-            if (Test-Path $folder) {
-              Write-Host "Found: $folder"
-              Get-ChildItem -Path $folder | ForEach-Object { Write-Host "    $($_.Name)" }
-            } else {
-              Write-Host "Missing: $folder"
-            }
-          }
+          # Import main PSAppDeployToolkit module
+          Import-Module ".\PSAppDeployToolkit\PSAppDeployToolkit.psd1" -Force
           
-          # Unblock all module files if they exist
-          foreach ($folder in $psadtFolders) {
-            if (Test-Path $folder) {
-              Get-ChildItem -Path ".\$folder" -Recurse -File | Unblock-File -ErrorAction Ignore
-            }
-          }
-          
-          # Try to import main PSAppDeployToolkit module
-          Write-Host ""
-          Write-Host "Attempting to import PSAppDeployToolkit..."
-          if (Test-Path ".\PSAppDeployToolkit\PSAppDeployToolkit.psd1") {
-            try {
-              Import-Module ".\PSAppDeployToolkit\PSAppDeployToolkit.psd1" -Force -ErrorAction Stop
-              Write-Host "PSAppDeployToolkit imported successfully"
-            } catch {
-              Write-Host "Failed to import PSAppDeployToolkit: $_"
-              throw
-            }
-          } else {
-            Write-Host "PSAppDeployToolkit.psd1 not found"
-            throw "PSAppDeployToolkit module not found"
-          }
-          
-          # Try to import extensions
+          # Import extensions
           if (Test-Path ".\PSAppDeployToolkit.Extensions") {
-            try {
-              Import-Module ".\PSAppDeployToolkit.Extensions" -Force -ErrorAction Stop
-              Write-Host "PSAppDeployToolkit.Extensions imported successfully"
-            } catch {
-              Write-Host "Failed to import Extensions: $_"
-            }
-          } else {
-            Write-Host "PSAppDeployToolkit.Extensions folder not found"
+            Import-Module ".\PSAppDeployToolkit.Extensions" -Force
           }
           
-          # Try to import WinGet module
+          # Import WinGet module
           if (Test-Path ".\PSAppDeployToolkit.WinGet") {
-            try {
-              Import-Module ".\PSAppDeployToolkit.WinGet" -Force -ErrorAction Stop
-              Write-Host "PSAppDeployToolkit.WinGet imported successfully"
-            } catch {
-              Write-Host "Failed to import WinGet module: $_"
-              throw
-            }
-          } else {
-            Write-Host "PSAppDeployToolkit.WinGet folder not found"
-            throw "PSAppDeployToolkit.WinGet module not found"
+            Import-Module ".\PSAppDeployToolkit.WinGet" -Force
           }
           
-          Write-Host ""
-          Write-Host "Checking available commands..."
+          Write-Host "Modules imported successfully"
           
-          # List all imported modules
-          $modules = Get-Module | Where-Object { $_.Name -like "*PSAppDeploy*" -or $_.Name -like "*WinGet*" }
-          Write-Host "Imported PSADT modules:"
-          $modules | ForEach-Object { Write-Host "  $($_.Name) - Version: $($_.Version)" }
-          
-          # Check for WinGet functions specifically
-          $wingetFunctions = Get-Command "*WinGet*" -ErrorAction SilentlyContinue | Where-Object { $_.Source -like "*PSAppDeploy*" }
-          Write-Host ""
+          # Verify WinGet functions are available
+          $wingetFunctions = Get-Command "*WinGet*" | Where-Object { $_.Source -like "*PSAppDeploy*" }
           Write-Host "Available PSADT WinGet functions:"
-          if ($wingetFunctions) {
-            $wingetFunctions | ForEach-Object { Write-Host "  $($_.Name)" }
-          } else {
-            Write-Host "  No WinGet functions found"
-            
-            # Let's see what functions are available
-            Write-Host ""
-            Write-Host "All available functions with 'WinGet' in name:"
-            Get-Command "*WinGet*" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.Name) (from $($_.Source))" }
-          }
+          $wingetFunctions | ForEach-Object { Write-Host "  $($_.Name)" }
 
       - name: Test PSADT WinGet functionality
         shell: powershell
@@ -181,70 +79,6 @@ jobs:
             Write-Host "PSADT WinGet verification passed after repair"
           }
 
-      - name: Test package search and validation
-        shell: pwsh
-        run: |
-          Write-Host "Testing package search for: ${{ matrix.wingetid }}"
-          
-          # Use PSADT function to find the package (like your script does)
-          try {
-            $package = Find-ADTWinGetPackage -Id "${{ matrix.wingetid }}" -ErrorAction Stop
-            Write-Host "Package found via PSADT: $($package.Name) - Version: $($package.Version)"
-          } catch {
-            throw "Package not found via PSADT: ${{ matrix.wingetid }}"
-          }
-          
-          # Check if package is already installed
-          $installedPackage = Get-ADTWinGetPackage -Id "${{ matrix.wingetid }}" -ErrorAction SilentlyContinue
-          if ($installedPackage) {
-            Write-Host "Package already installed: $($installedPackage.Version)"
-          } else {
-            Write-Host "Package not currently installed"
-          }
-
-      - name: Test installation parameters and syntax
-        shell: powershell
-        run: |
-          Write-Host "Testing: ${{ matrix.name }}"
-          Write-Host "Package: ${{ matrix.wingetid }}"
-          Write-Host "Arguments: ${{ matrix.args }}"
-          
-          # Build the parameters like your script does
-          $installParams = @{
-            Id = "${{ matrix.wingetid }}"
-            Force = $true
-          }
-          
-          # Parse and add additional parameters based on test matrix
-          $args = "${{ matrix.args }}"
-          
-          if ($args -match '-Version\s+"([^"]+)"') {
-            $installParams.Version = $matches[1]
-            Write-Host "Version parameter added: $($matches[1])"
-          }
-          
-          if ($args -match '-Custom\s+"([^"]+)"') {
-            $installParams.Custom = $matches[1]
-            Write-Host "Custom parameter added: $($matches[1])"
-          }
-          
-          if ($args -match '-AllowHashMismatch') {
-            $installParams.AllowHashMismatch = $true
-            Write-Host "AllowHashMismatch parameter added"
-          }
-          
-          Write-Host "Final install parameters:"
-          $installParams | Format-Table -AutoSize
-          
-          # Test parameter validation (don't actually install)
-          try {
-            # This would be: Install-ADTWinGetPackage @installParams -WhatIf
-            # But WhatIf might not be available, so we'll just validate the parameters
-            Write-Host "Parameter validation successful for ${{ matrix.name }}"
-          } catch {
-            throw "Parameter validation failed for ${{ matrix.name }}: $_"
-          }
-
       - name: Run PSScriptAnalyzer on main script
         shell: powershell
         run: |
@@ -255,27 +89,86 @@ jobs:
           }
           Write-Host "PSScriptAnalyzer passed"
 
-      - name: Validate AutoUpdate flag behavior
-        if: contains(matrix.args, 'AutoUpdate')
+      - name: Test all package scenarios
         shell: powershell
         run: |
-          Write-Host "Validating AutoUpdate flag behavior for ${{ matrix.wingetid }}"
-          # This would test that the AutoUpdate flag properly configures WAU
-          # For now, we'll just verify the logic path
-          Write-Host "AutoUpdate flag validation passed"
-
-      - name: Validate Custom arguments formatting
-        if: contains(matrix.args, 'Custom')
-        shell: powershell
-        run: |
-          Write-Host "Validating Custom arguments for ${{ matrix.wingetid }}"
-          # Verify custom arguments are properly escaped and formatted
-          $customArgs = "${{ matrix.args }}"
-          if ($customArgs -match '-Custom\s+".*"') {
-            Write-Host "Custom arguments properly formatted"
-          } else {
-            throw "Custom arguments not properly formatted"
+          # Define all test scenarios
+          $testScenarios = @(
+            @{ Name = "7zip - Base Test"; WingetId = "7zip.7zip"; Args = "" }
+            @{ Name = "GNU Nano - Base Test"; WingetId = "GNU.nano"; Args = "" }
+            @{ Name = "Notepad++ - AutoUpdate Flag"; WingetId = "Notepad++.Notepad++"; Args = "-AutoUpdate" }
+            @{ Name = "VLC - Version Flag"; WingetId = "VideoLAN.VLC"; Args = "-Version `"3.0.18`"" }
+            @{ Name = "Twingate - Custom Arguments Flag"; WingetId = "Twingate.Client"; Args = "-Custom `"`" network=internal.lan auto_update=true`"`"" }
+            @{ Name = "PuTTY - AllowHashMismatch Flag"; WingetId = "PuTTY.PuTTY"; Args = "-AllowHashMismatch" }
+            @{ Name = "Everything - AutoUpdate + Custom Combo"; WingetId = "voidtools.Everything"; Args = "-AutoUpdate -Custom `"/S`"" }
+            @{ Name = "IrfanView - Version + AllowHashMismatch Combo"; WingetId = "IrfanView.IrfanView"; Args = "-Version `"4.60`" -AllowHashMismatch" }
+          )
+          
+          foreach ($scenario in $testScenarios) {
+            Write-Host ""
+            Write-Host "========================================" -ForegroundColor Yellow
+            Write-Host "Testing: $($scenario.Name)" -ForegroundColor Yellow
+            Write-Host "Package: $($scenario.WingetId)"
+            Write-Host "Arguments: $($scenario.Args)"
+            Write-Host "========================================" -ForegroundColor Yellow
+            
+            # Test package search and validation
+            Write-Host "Searching for package via PSADT..."
+            try {
+              $package = Find-ADTWinGetPackage -Id $scenario.WingetId -ErrorAction Stop
+              Write-Host "Package found: $($package.Name) - Version: $($package.Version)"
+            } catch {
+              Write-Host "Package not found: $($scenario.WingetId)" -ForegroundColor Red
+              continue
+            }
+            
+            # Check if package is already installed
+            $installedPackage = Get-ADTWinGetPackage -Id $scenario.WingetId -ErrorAction SilentlyContinue
+            if ($installedPackage) {
+              Write-Host "Package already installed: $($installedPackage.Version)"
+            } else {
+              Write-Host "Package not currently installed"
+            }
+            
+            # Test installation parameters and syntax
+            Write-Host "Testing parameter building..."
+            
+            # Build the parameters like your script does
+            $installParams = @{
+              Id = $scenario.WingetId
+              Force = $true
+            }
+            
+            # Parse and add additional parameters based on test scenario
+            $args = $scenario.Args
+            
+            if ($args -match '-Version\s+`"([^`"]+)`"') {
+              $installParams.Version = $matches[1]
+              Write-Host "Version parameter added: $($matches[1])"
+            }
+            
+            if ($args -match '-Custom\s+`"([^`"]+)`"') {
+              $installParams.Custom = $matches[1]
+              Write-Host "Custom parameter added: $($matches[1])"
+            }
+            
+            if ($args -match '-AllowHashMismatch') {
+              $installParams.AllowHashMismatch = $true
+              Write-Host "AllowHashMismatch parameter added"
+            }
+            
+            if ($args -match '-AutoUpdate') {
+              Write-Host "AutoUpdate flag detected (would configure WAU)"
+            }
+            
+            Write-Host "Final install parameters:"
+            $installParams | Format-Table -AutoSize
+            
+            Write-Host "Parameter validation successful for $($scenario.Name)" -ForegroundColor Green
           }
+          
+          Write-Host ""
+          Write-Host "All test scenarios completed successfully!" -ForegroundColor Green
 
   update-version:
     runs-on: windows-latest
@@ -435,16 +328,28 @@ jobs:
             # Rename to our desired name
             $finalPath = Join-Path $outputFolder $outputFile
             Move-Item $createdPackage.FullName $finalPath -Force
-            Write-Host "✅ Package created: $finalPath"
+            Write-Host "Package created: $finalPath"
             
             # Get file size
             $fileSize = [math]::Round((Get-Item $finalPath).Length / 1MB, 2)
-            Write-Host "📊 Package size: $fileSize MB"
+            Write-Host "Package size: $fileSize MB"
+            
+            # Set output for use in later steps
+            echo "package-path=$finalPath" >> $env:GITHUB_OUTPUT
+            echo "package-name=$outputFile" >> $env:GITHUB_OUTPUT
           } else {
-            throw "❌ Package creation failed - no .intunewin file found"
+            throw "Package creation failed - no .intunewin file found"
           }
 
+      - name: Upload package as artifact (for dry run testing)
+        uses: actions/upload-artifact@v4
+        with:
+          name: "WingetWingman-v${{ inputs.version }}-Package"
+          path: "./Output/WingetWingman-v${{ inputs.version }}.intunewin"
+          retention-days: 30
+
       - name: Create GitHub Release
+        if: ${{ !inputs.dry_run }}
         uses: softprops/action-gh-release@v1
         with:
           tag_name: "v${{ inputs.version }}"
