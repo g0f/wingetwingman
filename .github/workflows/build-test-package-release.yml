@@ -27,11 +27,36 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Cache PowerShell modules
+        uses: actions/cache@v4.2.4
+        with:
+          path: |
+            C:\Users\runneradmin\Documents\PowerShell\Modules
+            C:\Program Files\PowerShell\Modules
+          key: ${{ runner.os }}-powershell-modules-${{ hashFiles('**/requirements.psd1') }}
+          restore-keys: |
+            ${{ runner.os }}-powershell-modules-
+
       - name: Setup PowerShell modules
         shell: powershell
         run: |
-          Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser
-          Install-Module -Name Pester -Force -Scope CurrentUser
+          # Check if modules are already installed (from cache)
+          $psScriptAnalyzer = Get-Module PSScriptAnalyzer -ListAvailable -ErrorAction SilentlyContinue
+          $pester = Get-Module Pester -ListAvailable -ErrorAction SilentlyContinue
+          
+          if (-not $psScriptAnalyzer) {
+            Write-Host "Installing PSScriptAnalyzer..."
+            Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser
+          } else {
+            Write-Host "PSScriptAnalyzer already available (cached)"
+          }
+          
+          if (-not $pester) {
+            Write-Host "Installing Pester..."
+            Install-Module -Name Pester -Force -Scope CurrentUser
+          } else {
+            Write-Host "Pester already available (cached)"
+          }
 
       - name: Import modules and test functionality
         shell: powershell
@@ -388,7 +413,7 @@ jobs:
           tag_name: "${{ inputs.version }}"
           name: "Winget Wingman ${{ inputs.version }}"
           body: |
-            ## Winget Wingman v${{ inputs.version }}
+            ## Winget Wingman ${{ inputs.version }}
             
             ### Package Information
             - **Version**: ${{ inputs.version }}
@@ -404,7 +429,7 @@ jobs:
             - Hash mismatch handling (PuTTY, IrfanView)
             
             ### Installation Instructions
-            1. Download the `WingetWingman-v${{ inputs.version }}.intunewin` file
+            1. Download the `WingetWingman-${{ inputs.version }}.intunewin` file
             2. Upload to Microsoft Intune as a Win32 app
             3. Configure with your desired WinGet package ID and parameters
             
@@ -422,6 +447,7 @@ jobs:
             # With custom arguments
             Invoke-AppDeployToolkit.exe -wingetID "Twingate.Client" -DeploymentType Install -DeployMode Silent -Custom "\" network=internal.lan auto_update=true\""
             ```
+          generate_release_notes: true
           files: |
             ./Output/WingetWingman-${{ inputs.version }}.intunewin
           draft: false
@@ -441,7 +467,7 @@ jobs:
             Write-Host "Go to Actions -> this workflow run -> Artifacts to download"
             Write-Host "Run again without dry_run=true to create release"
           } else {
-            Write-Host "GitHub Release created: v${{ inputs.version }}" -ForegroundColor Green
+            Write-Host "GitHub Release created: ${{ inputs.version }}" -ForegroundColor Green
             Write-Host "Package ready for download from Releases page"
             Write-Host "Version committed to repository"
           }
