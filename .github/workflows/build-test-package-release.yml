@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version number'
+        description: 'Version number (use latest: e.g., 1.2.0)'
         required: true
         type: string
       run_tests:
@@ -174,10 +174,8 @@ jobs:
           # Read the current script
           $content = Get-Content $scriptPath -Raw
           
-          # Update the AppScriptVersion
-          $content = $content -replace '(AppScriptVersion\s*=\s*'')[^'']*', "`${1}$version"
+          $content = $content -replace '\bAppScriptVersion(\s*=\s*'')[^'']*', "AppScriptVersion`${1}$version"
           
-          # Update the AppScriptDate to today
           $today = Get-Date -Format "yyyy-MM-dd"
           $content = $content -replace '(AppScriptDate\s*=\s*'')[^'']*', "`${1}$today"
           
@@ -385,8 +383,8 @@ jobs:
         if: ${{ !inputs.dry_run }}
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: "v${{ inputs.version }}"
-          name: "Winget Wingman v${{ inputs.version }}"
+          tag_name: "${{ inputs.version }}"
+          name: "Winget Wingman ${{ inputs.version }}"
           body: |
             ## Winget Wingman v${{ inputs.version }}
             
