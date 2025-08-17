@@ -33,7 +33,7 @@ jobs:
           Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser
           Install-Module -Name Pester -Force -Scope CurrentUser
 
-      - name: Import PSAppDeployToolkit modules
+      - name: Import modules, test functionality, and run all package scenarios
         shell: powershell
         run: |
           Write-Host "Importing PSAppDeployToolkit modules..."
@@ -62,10 +62,7 @@ jobs:
           $wingetFunctions = Get-Command "*WinGet*" | Where-Object { $_.Source -like "*PSAppDeploy*" }
           Write-Host "Available PSADT WinGet functions:"
           $wingetFunctions | ForEach-Object { Write-Host "  $($_.Name)" }
-
-      - name: Test PSADT WinGet functionality
-        shell: powershell
-        run: |
+          
           Write-Host "Testing PSADT WinGet functionality..."
           
           # Test WinGet package manager assertion (like your script does)
@@ -78,20 +75,16 @@ jobs:
             Assert-ADTWinGetPackageManager -ErrorAction Stop
             Write-Host "PSADT WinGet verification passed after repair"
           }
-
-      - name: Run PSScriptAnalyzer on main script
-        shell: powershell
-        run: |
+          
+          # Run PSScriptAnalyzer
+          Write-Host "Running PSScriptAnalyzer..."
           $results = Invoke-ScriptAnalyzer -Path ".\Invoke-AppDeployToolkit.ps1" -Severity Warning,Error
           if ($results) {
             $results | Format-Table -AutoSize
             throw "PSScriptAnalyzer found issues"
           }
           Write-Host "PSScriptAnalyzer passed"
-
-      - name: Test all package scenarios
-        shell: powershell
-        run: |
+          
           # Define all test scenarios
           $testScenarios = @(
             @{ Name = "7zip - Base Test"; WingetId = "7zip.7zip"; Args = "" }
