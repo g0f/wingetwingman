@@ -1,4 +1,4 @@
-<#
+﻿<#
 
 .SYNOPSIS
 PSAppDeployToolkit - This script performs the installation or uninstallation of an application(s).
