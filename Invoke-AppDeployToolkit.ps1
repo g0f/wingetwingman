@@ -1,4 +1,4 @@
-<#
+﻿<#
 
 .SYNOPSIS
 PSAppDeployToolkit - This script performs the installation or uninstallation of an application(s).
@@ -364,8 +364,19 @@ function Uninstall-ADTDeployment {
         Start-Sleep -Seconds 60
         $stillInstalled = Get-ADTWinGetPackage -Id $wingetID -ErrorAction SilentlyContinue
         if ($stillInstalled) {
-            Write-ADTLogEntry -Message "The silent uninstall for $($stillInstalled.Name) did not complete successfully.`n`nUpdate the Intune uninstall command to use Interactive mode instead of Silent mode." -Source $adtSession.DeployAppScriptFriendlyName
-            throw "Uninstall reported success but package is still installed - manual intervention required"
+            Write-ADTLogEntry -Message "The silent uninstall for $($stillInstalled.Name) did not complete successfully. Switching over to interactive mode..." -Source $adtSession.DeployAppScriptFriendlyName
+            $DeployMode = "Interactive"
+            try {
+                Uninstall-ADTWinGetPackage -Id $wingetID -Force -Scope System
+            }
+            catch {
+                if ($_.Exception.Message -like "*NO_APPLICATIONS_FOUND*") {
+                    Uninstall-ADTWinGetPackage -Id $wingetID -Force -Scope User
+                }
+                else {
+                    throw
+                }
+            }
         }
     }
 
