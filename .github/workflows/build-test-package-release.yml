@@ -161,6 +161,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Update version in script
         id: update
@@ -206,10 +208,130 @@ jobs:
           git commit -m "Update version to ${{ inputs.version }}"
           git push
 
-  package:
+  generate-changelog:
     runs-on: windows-latest
     needs: [update-version]
     if: always() && needs.update-version.result == 'success'
+    outputs:
+      changelog: ${{ steps.changelog.outputs.changelog }}
+      
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pull latest changes
+        if: ${{ !inputs.dry_run }}
+        shell: pwsh
+        run: |
+          git pull origin ${{ github.ref_name }}
+
+      - name: Generate changelog from commits
+        id: changelog
+        shell: pwsh
+        run: |
+          # Get the latest tag (previous version)
+          $latestTag = git describe --tags --abbrev=0 2>$null
+          if (-not $latestTag) {
+            # If no tags exist, get commits from beginning
+            $commitRange = "HEAD"
+            $sinceText = "initial commit"
+          } else {
+            $commitRange = "$latestTag..HEAD"
+            $sinceText = "version $latestTag"
+          }
+          
+          Write-Host "Generating changelog for commits since $sinceText"
+          Write-Host "Commit range: $commitRange"
+          
+          # Get commit messages since last tag
+          $commits = git log $commitRange --pretty=format:"%h - %s" --reverse
+          
+          if (-not $commits) {
+            Write-Host "No commits found since last tag"
+            $changelogContent = "No changes since last release."
+          } else {
+            Write-Host "Found commits:"
+            $commits | ForEach-Object { Write-Host "  $_" }
+            
+            # Build changelog
+            $changelogLines = @()
+            $changelogLines += "## What's Changed"
+            $changelogLines += ""
+            
+            # Categorize commits
+            $features = @()
+            $fixes = @()
+            $docs = @()
+            $chores = @()
+            $other = @()
+            
+            $commits | ForEach-Object {
+              $commit = $_
+              $message = $commit -replace '^\w+ - ', ''  # Remove hash prefix
+              
+              # Categorize based on commit message patterns
+              if ($message -match '^(feat|feature)(\(.+\))?: ' -or $message -match '^Add ' -or $message -match '^Implement ') {
+                $features += "- $message"
+              } elseif ($message -match '^(fix|bugfix)(\(.+\))?: ' -or $message -match '^Fix ' -or $message -match '^Resolve ') {
+                $fixes += "- $message"
+              } elseif ($message -match '^(docs?)(\(.+\))?: ' -or $message -match '^Update README' -or $message -match '^Documentation') {
+                $docs += "- $message"
+              } elseif ($message -match '^(chore|build|ci)(\(.+\))?: ' -or $message -match '^Update version' -or $message -match '^Bump ') {
+                $chores += "- $message"
+              } else {
+                $other += "- $message"
+              }
+            }
+            
+            # Add categorized sections
+            if ($features.Count -gt 0) {
+              $changelogLines += "### 🚀 New Features"
+              $changelogLines += $features
+              $changelogLines += ""
+            }
+            
+            if ($fixes.Count -gt 0) {
+              $changelogLines += "### 🐛 Bug Fixes"
+              $changelogLines += $fixes
+              $changelogLines += ""
+            }
+            
+            if ($docs.Count -gt 0) {
+              $changelogLines += "### 📚 Documentation"
+              $changelogLines += $docs
+              $changelogLines += ""
+            }
+            
+            if ($other.Count -gt 0) {
+              $changelogLines += "### 🔧 Other Changes"
+              $changelogLines += $other
+              $changelogLines += ""
+            }
+            
+            if ($chores.Count -gt 0) {
+              $changelogLines += "### 🧹 Maintenance"
+              $changelogLines += $chores
+              $changelogLines += ""
+            }
+            
+            $changelogContent = $changelogLines -join "`n"
+          }
+          
+
+          
+          Write-Host "Generated changelog:"
+          Write-Host $changelogContent
+          
+          # Escape for GitHub output (handle multiline)
+          $escapedChangelog = $changelogContent -replace "`r`n", "%0A" -replace "`n", "%0A" -replace "`r", "%0A"
+          echo "changelog=$escapedChangelog" >> $env:GITHUB_OUTPUT
+
+  package:
+    runs-on: windows-latest
+    needs: [generate-changelog]
+    if: always() && needs.generate-changelog.result == 'success'
     
     steps:
       - name: Checkout repository
@@ -387,41 +509,7 @@ jobs:
         with:
           tag_name: "${{ inputs.version }}"
           name: "Winget Wingman ${{ inputs.version }}"
-          body: |
-            ## Winget Wingman v${{ inputs.version }}
-            
-            ### Package Information
-            - **Version**: ${{ inputs.version }}
-            - **Build Date**: ${{ github.run_id }}
-            - **Commit**: ${{ github.sha }}
-            
-            ### Test Results
-            All package deployment scenarios tested successfully:
-            - Base installations (7zip, GNU.nano)
-            - AutoUpdate functionality (Notepad++, Everything)
-            - Version-specific installations (VLC, IrfanView)
-            - Custom arguments (Twingate, Everything)
-            - Hash mismatch handling (PuTTY, IrfanView)
-            
-            ### Installation Instructions
-            1. Download the `WingetWingman-v${{ inputs.version }}.intunewin` file
-            2. Upload to Microsoft Intune as a Win32 app
-            3. Configure with your desired WinGet package ID and parameters
-            
-            ### Usage Examples
-            ```powershell
-            # Basic installation
-            Invoke-AppDeployToolkit.exe -wingetID "7zip.7zip" -DeploymentType Install -DeployMode Silent
-            
-            # With auto-update enabled
-            Invoke-AppDeployToolkit.exe -wingetID "Notepad++.Notepad++" -DeploymentType Install -DeployMode Silent -AutoUpdate
-            
-            # With specific version
-            Invoke-AppDeployToolkit.exe -wingetID "VideoLAN.VLC" -DeploymentType Install -DeployMode Silent -Version "3.0.18"
-            
-            # With custom arguments
-            Invoke-AppDeployToolkit.exe -wingetID "Twingate.Client" -DeploymentType Install -DeployMode Silent -Custom "\" network=internal.lan auto_update=true\""
-            ```
+          body: ${{ needs.generate-changelog.outputs.changelog }}
           files: |
             ./Output/WingetWingman-${{ inputs.version }}.intunewin
           draft: false
