@@ -1,4 +1,4 @@
-﻿<#
+<#
 
 .SYNOPSIS
 PSAppDeployToolkit - This script performs the installation or uninstallation of an application(s).
@@ -112,8 +112,8 @@ $adtSession = @{
     AppSuccessExitCodes         = @(0)
     AppRebootExitCodes          = @(1641, 3010)
     AppProcessesToClose         = @()  # Example: @('excel', @{ Name = 'winword'; Description = 'Microsoft Word' })
-    AppScriptVersion            = '1.2.24'
-    AppScriptDate               = '2025-08-17'
+    AppScriptVersion            = '1.3'
+    AppScriptDate               = '2025-08-22'
     AppScriptAuthor             = 'Simon Enbom'
     RequireAdmin                = $true
 
