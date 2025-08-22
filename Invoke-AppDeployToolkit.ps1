@@ -112,8 +112,8 @@ $adtSession = @{
     AppSuccessExitCodes         = @(0)
     AppRebootExitCodes          = @(1641, 3010)
     AppProcessesToClose         = @()  # Example: @('excel', @{ Name = 'winword'; Description = 'Microsoft Word' })
-    AppScriptVersion            = '1.2.24'
-    AppScriptDate               = '2025-08-17'
+    AppScriptVersion            = 'PLACEHOLDER_VERSION'
+    AppScriptDate               = 'PLACEHOLDER_DATE'
     AppScriptAuthor             = 'Simon Enbom'
     RequireAdmin                = $true
 
@@ -124,7 +124,7 @@ $adtSession = @{
     # Script variables.
     DeployAppScriptFriendlyName = $MyInvocation.MyCommand.Name
     DeployAppScriptParameters   = $PSBoundParameters
-    DeployAppScriptVersion      = '1.1.2'
+    DeployAppScriptVersion      = '4.1.3'
 }
 
 function Install-ADTDeployment {
