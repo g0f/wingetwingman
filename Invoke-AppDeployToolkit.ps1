@@ -124,7 +124,7 @@ $adtSession = @{
     # Script variables.
     DeployAppScriptFriendlyName = $MyInvocation.MyCommand.Name
     DeployAppScriptParameters   = $PSBoundParameters
-    DeployAppScriptVersion      = '1.1.2'
+    DeployAppScriptVersion      = '4.1.3'
 }
 
 function Install-ADTDeployment {
@@ -566,4 +566,5 @@ catch {
 
     Close-ADTSession -ExitCode 60001
 }
+
 
