@@ -33,39 +33,9 @@ jobs:
           Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser
           Install-Module -Name Pester -Force -Scope CurrentUser
 
-      - name: Import modules and test functionality
+      - name: Run PSScriptAnalyzer
         shell: powershell
         run: |
-          Write-Host "Importing PSAppDeployToolkit modules..."
-          
-          # Unblock all module files
-          Get-ChildItem -Path ".\PSAppDeployToolkit" -Recurse -File | Unblock-File -ErrorAction Ignore
-          Get-ChildItem -Path ".\PSAppDeployToolkit.Extensions" -Recurse -File | Unblock-File -ErrorAction Ignore
-          Get-ChildItem -Path ".\PSAppDeployToolkit.WinGet" -Recurse -File | Unblock-File -ErrorAction Ignore
-          
-          # Import main PSAppDeployToolkit module
-          Import-Module ".\PSAppDeployToolkit\PSAppDeployToolkit.psd1" -Force
-          
-          # Import extensions
-          if (Test-Path ".\PSAppDeployToolkit.Extensions") {
-            Import-Module ".\PSAppDeployToolkit.Extensions" -Force
-          }
-          
-          # Import WinGet module
-          if (Test-Path ".\PSAppDeployToolkit.WinGet") {
-            Import-Module ".\PSAppDeployToolkit.WinGet" -Force
-          }
-          
-          Write-Host "Modules imported successfully"
-          
-          # Verify WinGet functions are available
-          $wingetFunctions = Get-Command "*WinGet*" | Where-Object { $_.Source -like "*PSAppDeploy*" }
-          Write-Host "Available PSADT WinGet functions:"
-          $wingetFunctions | ForEach-Object { Write-Host "  $($_.Name)" }
-          
-          Write-Host "Skipping WinGet functionality test - will be handled by installer on target machines"
-          
-          # Run PSScriptAnalyzer
           Write-Host "Running PSScriptAnalyzer..."
           $results = Invoke-ScriptAnalyzer -Path ".\Invoke-AppDeployToolkit.ps1" -Severity Error -ExcludeRule PSUseBOMForUnicodeEncodedFile
           if ($results) {
@@ -73,145 +43,11 @@ jobs:
             throw "PSScriptAnalyzer found issues"
           }
           Write-Host "PSScriptAnalyzer passed"
-          
-          # Test parameter building logic (without actually calling WinGet)
-          Write-Host "Testing parameter building logic..."
-          
-          # Define all test scenarios
-          $testScenarios = @(
-            @{ Name = "7zip - Base Test"; WingetId = "7zip.7zip"; Args = "" }
-            @{ Name = "GNU Nano - Base Test"; WingetId = "GNU.nano"; Args = "" }
-            @{ Name = "Notepad++ - AutoUpdate Flag"; WingetId = "Notepad++.Notepad++"; Args = "-AutoUpdate" }
-            @{ Name = "VLC - Version Flag"; WingetId = "VideoLAN.VLC"; Args = "-Version `"3.0.18`"" }
-            @{ Name = "Twingate - Custom Arguments Flag"; WingetId = "Twingate.Client"; Args = "-Custom `"`" network=internal.lan auto_update=true`"`"" }
-            @{ Name = "PuTTY - AllowHashMismatch Flag"; WingetId = "PuTTY.PuTTY"; Args = "-AllowHashMismatch" }
-            @{ Name = "Everything - AutoUpdate + Custom Combo"; WingetId = "voidtools.Everything"; Args = "-AutoUpdate -Custom `"/S`"" }
-            @{ Name = "IrfanView - Version + AllowHashMismatch Combo"; WingetId = "IrfanView.IrfanView"; Args = "-Version `"4.60`" -AllowHashMismatch" }
-          )
-          
-          foreach ($scenario in $testScenarios) {
-            Write-Host ""
-            Write-Host "========================================" -ForegroundColor Yellow
-            Write-Host "Testing: $($scenario.Name)" -ForegroundColor Yellow
-            Write-Host "Package: $($scenario.WingetId)"
-            Write-Host "Arguments: $($scenario.Args)"
-            Write-Host "========================================" -ForegroundColor Yellow
-            
-            # Test installation parameters and syntax (the core logic we want to test)
-            Write-Host "Testing parameter building..."
-            
-            # Build the parameters like your script does
-            $installParams = @{
-              Id = $scenario.WingetId
-              Force = $true
-            }
-            
-            # Parse and add additional parameters based on test scenario
-            $args = $scenario.Args
-            
-            if ($args -match '-Version\s+`"([^`"]+)`"') {
-              $installParams.Version = $matches[1]
-              Write-Host "Version parameter added: $($matches[1])"
-            }
-            
-            if ($args -match '-Custom\s+`"([^`"]+)`"') {
-              $installParams.Custom = $matches[1]
-              Write-Host "Custom parameter added: $($matches[1])"
-            }
-            
-            if ($args -match '-AllowHashMismatch') {
-              $installParams.AllowHashMismatch = $true
-              Write-Host "AllowHashMismatch parameter added"
-            }
-            
-            if ($args -match '-AutoUpdate') {
-              Write-Host "AutoUpdate flag detected (would configure WAU)"
-            }
-            
-            Write-Host "Final install parameters:"
-            $installParams | Format-Table -AutoSize
-            
-            # Validate the parameters make sense
-            if (-not $installParams.Id) {
-              throw "Missing required Id parameter"
-            }
-            
-            if ($installParams.Version -and $installParams.Version.Length -eq 0) {
-              throw "Version parameter is empty"
-            }
-            
-            if ($installParams.Custom -and $installParams.Custom.Length -eq 0) {
-              throw "Custom parameter is empty"  
-            }
-            
-            Write-Host "Parameter validation successful for $($scenario.Name)" -ForegroundColor Green
-          }
-          
-          Write-Host ""
-          Write-Host "All test scenarios completed successfully!" -ForegroundColor Green
-          Write-Host "Note: WinGet functionality will be tested on target machines during actual deployment" -ForegroundColor Cyan
-
-  update-version:
-    runs-on: windows-latest
-    needs: [test]
-    if: always() && (needs.test.result == 'success' || needs.test.result == 'skipped')
-    outputs:
-      updated-files: ${{ steps.update.outputs.files }}
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Fetch full history for changelog generation
-
-      - name: Update version in script
-        id: update
-        shell: pwsh
-        run: |
-          $version = "${{ inputs.version }}"
-          $scriptPath = ".\Invoke-AppDeployToolkit.ps1"
-          
-          Write-Host "Updating version to $version in $scriptPath"
-          
-          # Read the current script
-          $content = Get-Content $scriptPath -Raw
-          
-          # Update ONLY AppScriptVersion (not DeployAppScriptVersion)
-          $content = $content -replace '\bAppScriptVersion(\s*=\s*'')[^'']*', "AppScriptVersion`${1}$version"
-          
-          # Update the AppScriptDate to today
-          $today = Get-Date -Format "yyyy-MM-dd"
-          $content = $content -replace '(AppScriptDate\s*=\s*'')[^'']*', "`${1}$today"
-          
-          # Write back to file
-          Set-Content -Path $scriptPath -Value $content -NoNewline
-          
-          Write-Host "Version updated successfully"
-          
-          # Verify the changes
-          $updatedContent = Get-Content $scriptPath -Raw
-          if ($updatedContent -match "AppScriptVersion\s*=\s*'$version'") {
-            Write-Host "Version verification passed"
-          } else {
-            throw "Version update failed - version not found in updated content"
-          }
-          
-          echo "files=Invoke-AppDeployToolkit.ps1" >> $env:GITHUB_OUTPUT
-
-      - name: Commit version update
-        if: ${{ !inputs.dry_run }}
-        shell: pwsh
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add Invoke-AppDeployToolkit.ps1
-          git commit -m "Update version to ${{ inputs.version }}"
-          git push
 
   generate-changelog:
     runs-on: windows-latest
-    needs: [update-version]
-    if: always() && needs.update-version.result == 'success'
+    needs: [test]
+    if: always() && (needs.test.result == 'success' || needs.test.result == 'skipped')
     outputs:
       changelog: ${{ steps.changelog.outputs.changelog }}
       
@@ -220,12 +56,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Fetch full history
-
-      - name: Pull latest changes
-        if: ${{ !inputs.dry_run }}
-        shell: pwsh
-        run: |
-          git pull origin ${{ github.ref_name }}
 
       - name: Generate changelog from commits
         id: changelog
@@ -287,40 +117,38 @@ jobs:
             
             # Add categorized sections
             if ($features.Count -gt 0) {
-              $changelogLines += "### 🚀 New Features"
+              $changelogLines += "### New Features"
               $changelogLines += $features
               $changelogLines += ""
             }
             
             if ($fixes.Count -gt 0) {
-              $changelogLines += "### 🐛 Bug Fixes"
+              $changelogLines += "### Bug Fixes"
               $changelogLines += $fixes
               $changelogLines += ""
             }
             
             if ($docs.Count -gt 0) {
-              $changelogLines += "### 📚 Documentation"
+              $changelogLines += "### Documentation"
               $changelogLines += $docs
               $changelogLines += ""
             }
             
             if ($other.Count -gt 0) {
-              $changelogLines += "### 🔧 Other Changes"
+              $changelogLines += "### Other Changes"
               $changelogLines += $other
               $changelogLines += ""
             }
             
             if ($chores.Count -gt 0) {
-              $changelogLines += "### 🧹 Maintenance"
+              $changelogLines += "### Maintenance"
               $changelogLines += $chores
               $changelogLines += ""
             }
             
             $changelogContent = $changelogLines -join "`n"
           }
-          
 
-          
           Write-Host "Generated changelog:"
           Write-Host $changelogContent
           
@@ -336,14 +164,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.ref }}
-
-      - name: Pull latest changes
-        if: ${{ !inputs.dry_run }}
-        shell: pwsh
-        run: |
-          git pull origin ${{ github.ref_name }}
 
       - name: Download Microsoft Win32 Content Prep Tool
         shell: pwsh
@@ -385,36 +205,94 @@ jobs:
             throw
           }
 
-      - name: Prepare package directory
+      - name: Create staging directory and update version
         shell: pwsh
         run: |
-          Write-Host "Preparing package directory..."
+          Write-Host "Creating staging directory..."
           
-          # Create package directory
-          $packageDir = ".\WingetWingman-Package"
-          if (Test-Path $packageDir) {
-            Remove-Item $packageDir -Recurse -Force
+          # Create staging directory
+          $stagingDir = ".\Staging"
+          if (Test-Path $stagingDir) {
+            Remove-Item $stagingDir -Recurse -Force
           }
-          New-Item -Path $packageDir -ItemType Directory -Force
+          New-Item -Path $stagingDir -ItemType Directory -Force
           
-          # Copy all files except excluded ones
-          $excludeItems = @("README.md", ".github", ".git", "prep-tool*", "*Package*")
+          # Define folders and files to include (exclude .github, README, prep-tool, etc.)
+          $foldersToInclude = @('Assets', 'Config', 'Files', 'PSAppDeployToolkit', 'PSAppDeployToolkit.Extensions', 'PSAppDeployToolkit.WinGet', 'Strings', 'SupportFiles')
+          $filesToInclude = @('Invoke-AppDeployToolkit.exe', 'Invoke-AppDeployToolkit.ps1')
           
-          Get-ChildItem -Path "." | Where-Object {
-            $item = $_
-            $exclude = $false
-            foreach ($pattern in $excludeItems) {
-              if ($item.Name -like $pattern) {
-                $exclude = $true
-                break
-              }
+          # Copy folders
+          foreach ($folder in $foldersToInclude) {
+            if (Test-Path $folder) {
+              $destPath = Join-Path $stagingDir $folder
+              Write-Host "Copying folder: $folder -> $destPath"
+              Copy-Item -Path $folder -Destination $destPath -Recurse -Force
+            } else {
+              Write-Host "Warning: Folder '$folder' not found, skipping"
             }
-            -not $exclude
-          } | Copy-Item -Destination $packageDir -Recurse -Force
+          }
           
-          Write-Host "Package directory prepared"
-          Write-Host "Package contents:"
-          Get-ChildItem $packageDir -Recurse | ForEach-Object { Write-Host "  $($_.FullName.Replace((Get-Location).Path, ''))" }
+          # Copy individual files
+          foreach ($file in $filesToInclude) {
+            if (Test-Path $file) {
+              $destPath = Join-Path $stagingDir $file
+              Write-Host "Copying file: $file -> $destPath"
+              Copy-Item -Path $file -Destination $destPath -Force
+            } else {
+              Write-Host "Warning: File '$file' not found, skipping"
+            }
+          }
+          
+          Write-Host "Staging directory created successfully"
+          
+          # Update version and date in the staging copy
+          $version = "${{ inputs.version }}"
+          $scriptPath = Join-Path $stagingDir "Invoke-AppDeployToolkit.ps1"
+          $today = Get-Date -Format "yyyy-MM-dd"
+          
+          Write-Host "Updating version to $version and date to $today in staging copy"
+          
+          # Read the staging script
+          $content = Get-Content $scriptPath -Raw
+          
+          # Update version and date placeholders
+          $content = $content -replace "AppScriptVersion\s*=\s*'PLACEHOLDER_VERSION'", "AppScriptVersion            = '$version'"
+          $content = $content -replace "AppScriptDate\s*=\s*'PLACEHOLDER_DATE'", "AppScriptDate               = '$today'"
+          
+          # Write back to staging file
+          Set-Content -Path $scriptPath -Value $content -Encoding UTF8BOM
+          
+          Write-Host "Version and date updated successfully in staging copy"
+          
+          # Verify the changes
+          $updatedContent = Get-Content $scriptPath -Raw
+          if ($updatedContent -match "AppScriptVersion\s*=\s*'$version'") {
+            Write-Host "Version verification passed"
+          } else {
+            throw "Version update failed - version not found in updated content"
+          }
+          
+          if ($updatedContent -match "AppScriptDate\s*=\s*'$today'") {
+            Write-Host "Date verification passed"
+          } else {
+            throw "Date update failed - date not found in updated content"
+          }
+          
+          # Debug: Show staging directory contents
+          Write-Host "`n=== Staging Directory Contents ===" -ForegroundColor Yellow
+          Get-ChildItem -Path $stagingDir -Recurse | ForEach-Object {
+            $relativePath = $_.FullName.Replace("$stagingDir\", "")
+            if ($_.PSIsContainer) {
+              Write-Host "[DIR]  $relativePath" -ForegroundColor Cyan
+            } else {
+              $sizeMB = [math]::Round($_.Length / 1MB, 2)
+              Write-Host "[FILE] $relativePath ($sizeMB MB)"
+            }
+          }
+          
+          # Calculate staging directory size
+          $stagingSize = (Get-ChildItem -Path $stagingDir -Recurse -File | Measure-Object -Property Length -Sum).Sum
+          Write-Host "`nStaging directory size: $([math]::Round($stagingSize / 1MB, 2)) MB" -ForegroundColor Green
 
       - name: Create Intune Win32 package
         shell: pwsh
@@ -422,7 +300,7 @@ jobs:
           Write-Host "Creating Intune Win32 package..."
           
           $version = "${{ inputs.version }}"
-          $sourceFolder = ".\WingetWingman-Package"
+          $sourceFolder = ".\Staging"
           $setupFile = "Invoke-AppDeployToolkit.ps1"
           $outputFolder = ".\Output"
           $outputFile = "WingetWingman-$version.intunewin"
@@ -454,6 +332,15 @@ jobs:
           # Verify the tool exists and is accessible
           if (-not (Test-Path $toolFullPath)) {
             throw "Tool path does not exist: $toolFullPath"
+          }
+          
+          # Verify setup file exists in staging
+          $setupFilePath = Join-Path $sourceFolder $setupFile
+          if (-not (Test-Path $setupFilePath)) {
+            Write-Host "ERROR: $setupFile not found in staging directory" -ForegroundColor Red
+            Write-Host "Available files in staging:"
+            Get-ChildItem -Path $sourceFolder | ForEach-Object { Write-Host "  $($_.Name)" }
+            throw "Setup file not found in staging"
           }
           
           # Run the packaging tool
@@ -496,6 +383,19 @@ jobs:
             throw "Package creation failed - no .intunewin file found"
           }
 
+      - name: Cleanup staging directory
+        if: always()
+        shell: pwsh
+        run: |
+          $stagingPath = ".\Staging"
+          if (Test-Path $stagingPath) {
+            Write-Host "Cleaning up staging directory: $stagingPath"
+            Remove-Item -Path $stagingPath -Recurse -Force
+            Write-Host "Staging directory cleaned up successfully"
+          } else {
+            Write-Host "Staging directory not found, nothing to clean up"
+          }
+
       - name: Upload package as artifact (for dry run testing)
         uses: actions/upload-artifact@v4
         with:
@@ -531,6 +431,6 @@ jobs:
           } else {
             Write-Host "GitHub Release created: v${{ inputs.version }}" -ForegroundColor Green
             Write-Host "Package ready for download from Releases page"
-            Write-Host "Version committed to repository"
+            Write-Host "Repository source files remain unchanged"
           }
           Write-Host ""
