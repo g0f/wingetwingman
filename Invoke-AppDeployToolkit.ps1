@@ -1,4 +1,4 @@
-﻿<#
+<#
 
 .SYNOPSIS
 PSAppDeployToolkit - This script performs the installation or uninstallation of an application(s).
@@ -124,6 +124,7 @@ $adtSession = @{
     # Script variables.
     DeployAppScriptFriendlyName = $MyInvocation.MyCommand.Name
     DeployAppScriptParameters   = $PSBoundParameters
+    DeployAppScriptVersion      = '4.1.3'
     DeployAppScriptVersion      = '4.1.3'
 }
 
@@ -566,4 +567,5 @@ catch {
 
     Close-ADTSession -ExitCode 60001
 }
+
 
