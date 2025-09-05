@@ -153,7 +153,7 @@ jobs:
           Write-Host $changelogContent
           
           # Escape for GitHub output (handle multiline)
-          $escapedChangelog = $changelogContent -replace "`r`n", "%0A" -replace "`n", "%0A" -replace "`r", "%0A"
+          $escapedChangelog = $changelogContent -replace "`r`n", "`n" -replace "`r", "`n"
           echo "changelog=$escapedChangelog" >> $env:GITHUB_OUTPUT
 
   package:
