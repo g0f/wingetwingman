@@ -154,6 +154,22 @@ try
                 & $Script:CommandTable.'Add-Type' -LiteralPath $_
             }
         }
+
+        end
+        {
+            # Load in FileSystemAclExtensions if it's not available (i.e. Windows PowerShell).
+            if (!('System.IO.FileSystemAclExtensions' -as [System.Type]))
+            {
+                if ($isNetworkLocation)
+                {
+                    [System.Reflection.Assembly]::UnsafeLoadFrom("$PSScriptRoot\lib\System.IO.FileSystem.AccessControl.dll")
+                }
+                else
+                {
+                    & $Script:CommandTable.'Add-Type' -LiteralPath $PSScriptRoot\lib\System.IO.FileSystem.AccessControl.dll
+                }
+            }
+        }
     }
 
     # Remove any previous functions that may have been defined.
@@ -276,7 +292,7 @@ function Private:Convert-ADTRegistryKeyToHashtable
                             }
                             elseif ($_.Value -match '^0[xX][0-9a-fA-F]+$')
                             {
-                                $subdata.Add($_.Name, [System.Int32]::Parse($_.Value.Replace('0x', $null), [System.Globalization.NumberStyles]::HexNumber))
+                                $subdata.Add($_.Name, [System.Int32]::Parse($_.Value.Replace('0x', [System.Management.Automation.Language.NullString]::Value), [System.Globalization.NumberStyles]::HexNumber))
                             }
                             else
                             {
@@ -403,16 +419,34 @@ function Private:Exit-ADTInvocation
 
 function Private:Get-ADTClientServerUser
 {
-    [CmdletBinding()]
+    [CmdletBinding(DefaultParameterSetName = 'Default')]
     [OutputType([PSADT.Module.RunAsActiveUser])]
     param
     (
-        [Parameter(Mandatory = $false)]
+        [Parameter(Mandatory = $true, ParameterSetName = 'Username')]
+        [ValidateNotNullOrEmpty()]
+        [System.Security.Principal.NTAccount]$Username,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'Username')]
+        [System.Management.Automation.SwitchParameter]$AllowAnyValidSession,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default')]
         [System.Management.Automation.SwitchParameter]$AllowSystemFallback
     )
 
     # Get the active user from the environment if available.
-    $runAsActiveUser = if ((& $Script:CommandTable.'Test-ADTSessionActive') -or (& $Script:CommandTable.'Test-ADTModuleInitialized'))
+    $runAsActiveUser = if ($Username)
+    {
+        if ($Username.Value.Contains('\'))
+        {
+            (& $Script:CommandTable.'Get-ADTLoggedOnUser').GetEnumerator() | & { process { if ($_.NTAccount -eq $Username) { return $_.ToRunAsActiveUser() } } } | & $Script:CommandTable.'Select-Object' -First 1
+        }
+        else
+        {
+            (& $Script:CommandTable.'Get-ADTLoggedOnUser').GetEnumerator() | & { process { if ($_.Username -eq $Username) { return $_.ToRunAsActiveUser() } } } | & $Script:CommandTable.'Select-Object' -First 1
+        }
+    }
+    elseif ((& $Script:CommandTable.'Test-ADTSessionActive') -or (& $Script:CommandTable.'Test-ADTModuleInitialized'))
     {
         (& $Script:CommandTable.'Get-ADTEnvironmentTable').RunAsActiveUser
     }
@@ -428,19 +462,19 @@ function Private:Get-ADTClientServerUser
         if (!$runAsActiveUser.SID.Equals([PSADT.AccountManagement.AccountUtilities]::CallerSid) -and ![PSADT.AccountManagement.AccountUtilities]::CallerIsLocalSystem -and [System.Environment]::UserInteractive -and ($null -ne ($missingPermissions = [PSADT.Security.SE_PRIVILEGE]::SeDebugPrivilege, [PSADT.Security.SE_PRIVILEGE]::SeIncreaseQuotaPrivilege, [PSADT.Security.SE_PRIVILEGE]::SeAssignPrimaryTokenPrivilege | & { process { if (![PSADT.AccountManagement.AccountUtilities]::CallerPrivileges.Contains($_)) { return $_ } } })))
         {
             & $Script:CommandTable.'Write-ADTLogEntry' -Message "The calling account [$([PSADT.AccountManagement.AccountUtilities]::CallerUsername)] is running interactively, but not as the logged on user and is missing the permission(s) ['$([System.String]::Join("', '", $missingPermissions))'] necessary to create a process as another user. The client/server process will be created as the calling account, however PSAppDeployToolkit's client/server process is designed to operate directly as a logged on user. As such, it is recommended to either log on directly to Windows using this account you're testing with, assign this account the missing permissions, or test via the SYSTEM account just as ConfigMgr or Intune uses for its operations." -Severity Warning
-            return [PSADT.Module.RunAsActiveUser]::new([PSADT.AccountManagement.AccountUtilities]::CallerUsername, [PSADT.AccountManagement.AccountUtilities]::CallerSid, [PSADT.AccountManagement.AccountUtilities]::CallerSessionId)
+            return [PSADT.AccountManagement.AccountUtilities]::CallerRunAsActiveUser
         }
 
         # Only return the calculated RunAsActiveUser if the user is still logged on and active as of right now.
-        if (($runAsUserSession = $(& $Script:CommandTable.'Get-ADTLoggedOnUser' -InformationAction SilentlyContinue) | & { process { if ($runAsActiveUser.NTAccount.Equals($_.NTAccount)) { return $_ } } } | & $Script:CommandTable.'Select-Object' -First 1) -and $runAsUserSession.IsActiveUserSession)
+        if (($runAsUserSession = $(& $Script:CommandTable.'Get-ADTLoggedOnUser' -InformationAction SilentlyContinue) | & { process { if ($runAsActiveUser.SID.Equals($_.SID)) { return $_ } } } | & $Script:CommandTable.'Select-Object' -First 1) -and ($runAsUserSession.IsActiveUserSession -or ($AllowAnyValidSession -and $runAsUserSession.IsValidUserSession)))
         {
             return $runAsActiveUser
         }
     }
-    elseif ([System.Environment]::UserInteractive -and (![PSADT.AccountManagement.AccountUtilities]::CallerIsLocalSystem -or $AllowSystemFallback))
+    elseif (!$Username -and [System.Environment]::UserInteractive -and (![PSADT.AccountManagement.AccountUtilities]::CallerIsLocalSystem -or $AllowSystemFallback))
     {
         # If there's no RunAsActiveUser but the current process is interactive, just run it as the current user.
-        return [PSADT.Module.RunAsActiveUser]::new([PSADT.AccountManagement.AccountUtilities]::CallerUsername, [PSADT.AccountManagement.AccountUtilities]::CallerSid, [PSADT.AccountManagement.AccountUtilities]::CallerSessionId)
+        return [PSADT.AccountManagement.AccountUtilities]::CallerRunAsActiveUser
     }
 }
 
@@ -456,7 +490,7 @@ function Private:Get-ADTEdgeExtensions
     # Check if the ExtensionSettings registry key exists. If not, create it.
     if (!(& $Script:CommandTable.'Test-ADTRegistryValue' -Key Microsoft.PowerShell.Core\Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge -Name ExtensionSettings))
     {
-        & $Script:CommandTable.'Set-ADTRegistryKey' -Key Microsoft.PowerShell.Core\Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge -Name ExtensionSettings -Value "" | & $Script:CommandTable.'Out-Null'
+        & $Script:CommandTable.'Set-ADTRegistryKey' -Key Microsoft.PowerShell.Core\Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge -Name ExtensionSettings | & $Script:CommandTable.'Out-Null'
         return [pscustomobject]@{}
     }
     $extensionSettings = & $Script:CommandTable.'Get-ADTRegistryKey' -Key Microsoft.PowerShell.Core\Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge -Name ExtensionSettings
@@ -568,15 +602,15 @@ function Private:Get-ADTRunAsActiveUser
         if ($session.SID.Equals([PSADT.AccountManagement.AccountUtilities]::CallerSid) -and $session.IsActiveUserSession)
         {
             & $Script:CommandTable.'Write-ADTLogEntry' -Message "The active user session on this device is [$($session.NTAccount)]."
-            return [PSADT.Module.RunAsActiveUser]::new($session.NTAccount, $session.SID, $session.SessionId)
+            return $session.ToRunAsActiveUser()
         }
     }
 
     # The caller SID isn't the active user session, try to find the best available match.
-    if ($session = $userSessions | & { process { if ($_.NTAccount -and $_.IsActiveUserSession) { return $_ } } } | & $Script:CommandTable.'Sort-Object' -Property LogonTime -Descending | & $Script:CommandTable.'Select-Object' -First 1)
+    if ($session = $userSessions | & { process { if ($_.IsActiveUserSession) { return $_ } } } | & $Script:CommandTable.'Sort-Object' -Property LogonTime -Descending | & $Script:CommandTable.'Select-Object' -First 1)
     {
         & $Script:CommandTable.'Write-ADTLogEntry' -Message "The active user session on this device is [$($session.NTAccount)]."
-        return [PSADT.Module.RunAsActiveUser]::new($session.NTAccount, $session.SID, $session.SessionId)
+        return $session.ToRunAsActiveUser()
     }
     & $Script:CommandTable.'Write-ADTLogEntry' -Message 'There was no active user session found on this device.'
 }
@@ -650,7 +684,7 @@ function Private:Get-ADTStringLanguage
         else
         {
             # We failed all the above, so get the actual user's $PSUICulture value.
-            $((& $Script:CommandTable.'Start-ADTProcess' -Username $runAsActiveUser.NTAccount -FilePath powershell.exe -ArgumentList '-NonInteractive -NoProfile -NoLogo -WindowStyle Hidden -Command $PSUICulture' -MsiExecWaitTime ([System.TimeSpan]::FromSeconds($adtConfig.MSI.MutexWaitTime)) -CreateNoWindow -PassThru -InformationAction SilentlyContinue).StdOut)
+            $((& $Script:CommandTable.'Start-ADTProcess' -RunAsActiveUser $runAsActiveUser -FilePath powershell.exe -ArgumentList '-NonInteractive -NoProfile -NoLogo -WindowStyle Hidden -Command $PSUICulture' -MsiExecWaitTime ([System.TimeSpan]::FromSeconds($adtConfig.MSI.MutexWaitTime)) -CreateNoWindow -PassThru -InformationAction SilentlyContinue).StdOut)
         }
     }
     else
@@ -980,43 +1014,47 @@ function Private:Import-ADTStringTable
     )
 
     # Internal filter to expand variables.
-    filter Expand-ADTConfigValuesInStringTable
+    function Expand-ADTConfigValuesInStringTable
     {
-        # Go recursive if we've received a hashtable, otherwise just update the values.
-        foreach ($section in $($_.GetEnumerator()))
+        begin
         {
-            if ($section.Value -is [System.String])
+            $substitutions = [System.Text.RegularExpressions.Regex]::new('\{([^\d]+)\}', [System.Text.RegularExpressions.RegexOptions]::Compiled)
+            $config = & $Script:CommandTable.'Get-ADTConfig'
+        }
+
+        process
+        {
+            foreach ($section in $($_.GetEnumerator()))
             {
-                $_.($section.Key) = $substitutions.Replace($section.Value,
-                    {
-                        return $args[0].Groups[1].Value.Split('\') | & {
-                            begin
-                            {
-                                $result = $config
+                if ($section.Value -is [System.String])
+                {
+                    $_.($section.Key) = $substitutions.Replace($section.Value,
+                        {
+                            return $args[0].Groups[1].Value.Split('\') | & {
+                                begin
+                                {
+                                    $result = $config
+                                }
+                                process
+                                {
+                                    $result = $result.$_
+                                }
+                                end
+                                {
+                                    return $result
+                                }
                             }
-                            process
-                            {
-                                $result = $result.$_
-                            }
-                            end
-                            {
-                                return $result
-                            }
-                        }
-                    })
-            }
-            elseif ($section.Value -is [System.Collections.Hashtable])
-            {
-                $section.Value | & $MyInvocation.MyCommand
+                        })
+                }
+                elseif ($section.Value -is [System.Collections.Hashtable])
+                {
+                    $section.Value | & $MyInvocation.MyCommand
+                }
             }
         }
     }
 
-    # Get the current config so we can read its values.
-    $config = & $Script:CommandTable.'Get-ADTConfig'
-
     # Import string table, perform value substitutions, then return it to the caller.
-    $substitutions = [System.Text.RegularExpressions.Regex]::new('\{([^\d]+)\}', [System.Text.RegularExpressions.RegexOptions]::Compiled)
     $strings = & $Script:CommandTable.'Import-ADTModuleDataFile' @PSBoundParameters -FileName strings.psd1 -IgnorePolicy
     $strings | Expand-ADTConfigValuesInStringTable
     return $strings
@@ -1217,7 +1255,7 @@ function Private:Invoke-ADTClientServerOperation
     if (($PSCmdlet.ParameterSetName -match '^(InitCloseAppsDialog|PromptToCloseApps|ProgressDialogOpen|ShowProgressDialog|UpdateProgressDialog|CloseProgressDialog|MinimizeAllWindows|RestoreAllWindows)$') -or
         [PSADT.UserInterface.Dialogs.DialogType]::CloseAppsDialog.Equals($DialogType) -or
         ((& $Script:CommandTable.'Test-ADTSessionActive') -and $User.Equals((& $Script:CommandTable.'Get-ADTEnvironmentTable').RunAsActiveUser) -and !$NoWait) -or
-        ($Script:ADT.ClientServerProcess -and $Script:ADT.ClientServerProcess.Username.Equals($User.NTAccount) -and !$NoWait))
+        ($Script:ADT.ClientServerProcess -and $Script:ADT.ClientServerProcess.RunAsActiveUser.Equals($User) -and !$NoWait))
     {
         # Instantiate a new ClientServerProcess object if one's not already present.
         if (!$Script:ADT.ClientServerProcess)
@@ -1234,7 +1272,7 @@ function Private:Invoke-ADTClientServerOperation
 
             # Instantiate a new ClientServerProcess object as required, then add the necessary callback.
             & $Script:CommandTable.'Write-ADTLogEntry' -Message 'Instantiating user client/server process.'
-            $Script:ADT.ClientServerProcess = [PSADT.ClientServer.ServerInstance]::new($User.NTAccount)
+            $Script:ADT.ClientServerProcess = [PSADT.ClientServer.ServerInstance]::new($User)
             try
             {
                 $Script:ADT.ClientServerProcess.Open()
@@ -1914,6 +1952,7 @@ function Private:New-ADTEnvironmentTable
     $variables.Add('IsServerOS', $variables.envOSProductType -eq 3)
     $variables.Add('IsDomainControllerOS', $variables.envOSProductType -eq 2)
     $variables.Add('IsWorkstationOS', $variables.envOSProductType -eq 1)
+    $variables.Add('IsTerminalServer', $osInfo.IsTerminalServer)
     $variables.Add('IsMultiSessionOS', $osInfo.IsWorkstationEnterpriseMultiSessionOS)
     $variables.Add('envOSProductTypeName', [Microsoft.PowerShell.Commands.ProductType]$variables.envOSProductType)
 
@@ -2048,7 +2087,7 @@ function Private:New-ADTEnvironmentTable
 
     ## Variables: Invalid FileName Characters
     $variables.Add('invalidFileNameChars', [System.Collections.Generic.IReadOnlyList[System.Char]][System.Collections.ObjectModel.ReadOnlyCollection[System.Char]][System.IO.Path]::GetInvalidFileNameChars())
-    $variables.Add('invalidFileNameCharsRegExPattern', [System.Text.RegularExpressions.Regex]::new("[$([System.Text.RegularExpressions.Regex]::Escape([System.String]::Join([System.String]::Empty, $variables.invalidFileNameChars)))]", [System.Text.RegularExpressions.RegexOptions]::Compiled))
+    $variables.Add('invalidFileNameCharsRegExPattern', [System.Text.RegularExpressions.Regex]::new("[$([System.Text.RegularExpressions.Regex]::Escape([System.String]::Join([System.Management.Automation.Language.NullString]::Value, $variables.invalidFileNameChars)))]", [System.Text.RegularExpressions.RegexOptions]::Compiled))
 
     ## Variables: RegEx Patterns
     $variables.Add('MSIProductCodeRegExPattern', '^(\{{0,1}([0-9a-fA-F]){8}-([0-9a-fA-F]){4}-([0-9a-fA-F]){4}-([0-9a-fA-F]){4}-([0-9a-fA-F]){12}\}{0,1})$')
@@ -2093,7 +2132,7 @@ function Private:Set-ADTClientServerProcessPermissions
     # Set required permissions on this module's library files.
     try
     {
-        [PSADT.ClientServer.ClientPermissions]::Remediate($User, [System.String[]]$(if (& $Script:CommandTable.'Test-ADTModuleInitialized') { ($adtConfig = & $Script:CommandTable.'Get-ADTConfig').Assets.Logo; $adtConfig.Assets.LogoDark; $adtConfig.Assets.Banner }))
+        [PSADT.ClientServer.ClientPermissions]::Remediate($User, [System.IO.FileInfo[]]$(if (& $Script:CommandTable.'Test-ADTModuleInitialized') { ($adtConfig = & $Script:CommandTable.'Get-ADTConfig').Assets.Logo; $adtConfig.Assets.LogoDark; $adtConfig.Assets.Banner }))
     }
     catch
     {
@@ -2239,11 +2278,19 @@ function Private:Unblock-ADTAppExecutionInternal
                 Remove-ItemProperty -LiteralPath $_.PSParentPath -Name UseFilter -Verbose:$false
                 Remove-ItemProperty -LiteralPath $_.PSPath -Name Debugger -Verbose:$false
                 Remove-Item -LiteralPath "$($_.PSParentPath)\MyFilter" -Verbose:$false
+                if (!(Get-ChildItem -LiteralPath $_.PSParentPath -Verbose:$false) -and !(Get-ItemProperty -LiteralPath $_.PSParentPath -Verbose:$false))
+                {
+                    Remove-Item -LiteralPath $_.PSParentPath -Verbose:$false
+                }
             }
             else
             {
                 Write-Verbose -Message "Removing the Image File Execution Options registry key to unblock execution of [$($_.PSChildName)]."
                 Remove-ItemProperty -LiteralPath $_.PSPath -Name Debugger -Verbose:$false
+                if (!(Get-ChildItem -LiteralPath $_.PSPath -Verbose:$false) -and !(Get-ItemProperty -LiteralPath $_.PSPath -Verbose:$false))
+                {
+                    Remove-Item -LiteralPath $_.PSPath -Verbose:$false
+                }
             }
         }
     }
@@ -2646,6 +2693,7 @@ function Block-ADTAppExecution
             & $Script:CommandTable.'Write-ADTLogEntry' -Message "Bypassing Function [$($MyInvocation.MyCommand.Name)], because [User: $($adtEnv.ProcessNTAccount)] is not admin."
             return
         }
+        & $Script:CommandTable.'Write-ADTLogEntry' -Message "Preparing to block execution of the following processes: ['$([System.String]::Join("', '", $ProcessName))']."
 
         try
         {
@@ -2656,24 +2704,6 @@ function Block-ADTAppExecution
                 {
                     & $Script:CommandTable.'Write-ADTLogEntry' -Message "Scheduled task [$taskName] already exists, running [Unblock-ADTAppExecution] to clean up previous state."
                     & $Script:CommandTable.'Unblock-ADTAppExecution' -Tasks $task
-                }
-
-                # Create a scheduled task to run on startup to call this script and clean up blocked applications in case the installation is interrupted, e.g. user shuts down during installation"
-                & $Script:CommandTable.'Write-ADTLogEntry' -Message 'Creating scheduled task to cleanup blocked applications in case the installation is interrupted.'
-                try
-                {
-                    $nstParams = @{
-                        Principal = & $Script:CommandTable.'New-ScheduledTaskPrincipal' -Id Author -UserId S-1-5-18
-                        Trigger = & $Script:CommandTable.'New-ScheduledTaskTrigger' -AtStartup
-                        Action = & $Script:CommandTable.'New-ScheduledTaskAction' -Execute (& $Script:CommandTable.'Get-ADTPowerShellProcessPath') -Argument "-NonInteractive -NoProfile -NoLogo -WindowStyle Hidden -EncodedCommand $(& $Script:CommandTable.'Out-ADTPowerShellEncodedCommand' -Command "& {$($Script:CommandTable.'Unblock-ADTAppExecutionInternal'.ScriptBlock)} -TaskName '$($taskName.Replace("'", "''"))'")"
-                        Settings = & $Script:CommandTable.'New-ScheduledTaskSettingsSet' -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd -ExecutionTimeLimit ([System.TimeSpan]::FromHours(1))
-                    }
-                    $null = & $Script:CommandTable.'New-ScheduledTask' @nstParams | & $Script:CommandTable.'Register-ScheduledTask' -TaskName $taskName
-                }
-                catch
-                {
-                    & $Script:CommandTable.'Write-ADTLogEntry' -Message "Failed to create the scheduled task [$taskName]." -Severity 3
-                    return
                 }
 
                 # Configure the appropriate permissions for the client/server process.
@@ -2700,6 +2730,7 @@ function Block-ADTAppExecution
                     AppIconDarkImage = $adtConfig.Assets.LogoDark
                     AppBannerImage = $adtConfig.Assets.Banner
                     DialogTopMost = $true
+                    Language = $Script:ADT.Language
                     MinimizeWindows = $false
                     DialogExpiryDuration = [System.TimeSpan]::FromSeconds($adtConfig.UI.DefaultTimeout)
                     MessageText = $adtStrings.BlockExecutionText.Message.($adtSession.DeploymentType.ToString())
@@ -2725,7 +2756,32 @@ function Block-ADTAppExecution
                 # Store the BlockExection command in the registry due to IFEO length issues when > 255 chars.
                 $blockExecRegPath = "Microsoft.PowerShell.Core\Registry::HKEY_LOCAL_MACHINE\SOFTWARE\$($adtEnv.appDeployToolkitName)"; $blockExecRegName = 'BlockExecutionCommand'
                 $blockExecDbgPath = "`"$($Script:PSScriptRoot)\lib\PSADT.ClientServer.Client.Launcher.exe`" /smd -ArgV $($blockExecRegPath.Split('::', [System.StringSplitOptions]::RemoveEmptyEntries)[1])\$blockExecRegName"
+
+                # If the IFEO path is > 255 characters, warn about it and bomb out.
+                if ($blockExecDbgPath -gt 255)
+                {
+                    & $Script:CommandTable.'Write-ADTLogEntry' -Message "The generated block execution command of [$blockExecDbgPath] exceeds the maximum allowable length of 255 characters; unable to block execution." -Severity Warning
+                    return
+                }
                 & $Script:CommandTable.'Set-ADTRegistryKey' -Key $blockExecRegPath -Name $blockExecRegName -Value ([PSADT.ClientServer.DataSerialization]::SerializeToString($blockExecArgs)) -InformationAction SilentlyContinue
+
+                # Create a scheduled task to run on startup to call this script and clean up blocked applications in case the installation is interrupted, e.g. user shuts down during installation"
+                & $Script:CommandTable.'Write-ADTLogEntry' -Message 'Creating scheduled task to cleanup blocked applications in case the installation is interrupted.'
+                try
+                {
+                    $nstParams = @{
+                        Principal = & $Script:CommandTable.'New-ScheduledTaskPrincipal' -Id Author -UserId S-1-5-18
+                        Trigger = & $Script:CommandTable.'New-ScheduledTaskTrigger' -AtStartup
+                        Action = & $Script:CommandTable.'New-ScheduledTaskAction' -Execute (& $Script:CommandTable.'Get-ADTPowerShellProcessPath') -Argument "-NonInteractive -NoProfile -NoLogo -WindowStyle Hidden -EncodedCommand $(& $Script:CommandTable.'Out-ADTPowerShellEncodedCommand' -Command "& {$($Script:CommandTable.'Unblock-ADTAppExecutionInternal'.ScriptBlock)} -TaskName '$($taskName.Replace("'", "''"))'")"
+                        Settings = & $Script:CommandTable.'New-ScheduledTaskSettingsSet' -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd -ExecutionTimeLimit ([System.TimeSpan]::FromHours(1))
+                    }
+                    $null = & $Script:CommandTable.'New-ScheduledTask' @nstParams | & $Script:CommandTable.'Register-ScheduledTask' -TaskName $taskName
+                }
+                catch
+                {
+                    & $Script:CommandTable.'Write-ADTLogEntry' -Message "Failed to create the scheduled task [$taskName]." -Severity 3
+                    return
+                }
 
                 # Enumerate each process and set the debugger value to block application execution.
                 foreach ($process in $ProcessName)
@@ -2993,8 +3049,14 @@ function Close-ADTSession
     .PARAMETER ExitCode
         The exit code to set for the session.
 
+    .PARAMETER NoShellExit
+        Doesn't exit PowerShell upon closing of the final session.
+
     .PARAMETER Force
         Forcibly exits PowerShell upon closing of the final session.
+
+    .PARAMETER PassThru
+        Returns the exit code of the session being closed.
 
     .INPUTS
         None
@@ -3028,15 +3090,25 @@ function Close-ADTSession
         https://psappdeploytoolkit.com/docs/reference/functions/Close-ADTSession
     #>
 
-    [CmdletBinding()]
+    [CmdletBinding(DefaultParameterSetName = 'None')]
     param
     (
-        [Parameter(Mandatory = $false)]
+        [Parameter(Mandatory = $false, ParameterSetName = 'None')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'NoShellExit')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Force')]
         [ValidateNotNullOrEmpty()]
         [System.Nullable[System.Int32]]$ExitCode,
 
-        [Parameter(Mandatory = $false)]
-        [System.Management.Automation.SwitchParameter]$Force
+        [Parameter(Mandatory = $true, ParameterSetName = 'NoShellExit')]
+        [System.Management.Automation.SwitchParameter]$NoShellExit,
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'Force')]
+        [System.Management.Automation.SwitchParameter]$Force,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'None')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'NoShellExit')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Force')]
+        [System.Management.Automation.SwitchParameter]$PassThru
     )
 
     begin
@@ -3148,10 +3220,20 @@ function Close-ADTSession
             $null = $Script:ADT.Sessions.Remove($adtSession)
         }
 
+        # Forcibly set the LASTEXITCODE so it's available if we're breaking
+        # or running Close-ADTSession from a PowerShell runspace, etc.
+        $Global:LASTEXITCODE = $ExitCode
+
         # Hand over to our backend closure routine if this was the last session.
         if (!$Script:ADT.Sessions.Count)
         {
-            & $Script:CommandTable.'Exit-ADTInvocation' -ExitCode $ExitCode -NoShellExit:(!$adtSession.CanExitOnClose()) -Force:($Force -or ($Host.Name.Equals('ConsoleHost') -and ($preCloseErrors -or $postCloseErrors)))
+            & $Script:CommandTable.'Exit-ADTInvocation' -ExitCode $ExitCode -NoShellExit:($NoShellExit -or !$adtSession.CanExitOnClose()) -Force:($Force -or ($Host.Name.Equals('ConsoleHost') -and ($preCloseErrors -or $postCloseErrors)))
+        }
+
+        # If we're still here and are to pass through the exit code, do so.
+        if ($PassThru)
+        {
+            return $ExitCode
         }
     }
 
@@ -5295,8 +5377,8 @@ function Get-ADTApplication
                         $(if (($appDisplayVersion = $item.GetValue('DisplayVersion', $null)) -and ![System.String]::IsNullOrWhiteSpace($appDisplayVersion)) { $appDisplayVersion }),
                         $(if (($appUninstallString = $item.GetValue('UninstallString', $null)) -and ![System.String]::IsNullOrWhiteSpace($appUninstallString)) { $appUninstallString }),
                         $(if (($appQuietUninstallString = $item.GetValue('QuietUninstallString', $null)) -and ![System.String]::IsNullOrWhiteSpace($appQuietUninstallString)) { $appQuietUninstallString }),
-                        $(if (($appInstallSource = $item.GetValue('InstallSource', $null)) -and ![System.String]::IsNullOrWhiteSpace($appInstallSource)) { $appInstallSource }),
-                        $(if (($appInstallLocation = $item.GetValue('InstallLocation', $null)) -and ![System.String]::IsNullOrWhiteSpace($appInstallLocation)) { $appInstallLocation }),
+                        $(if (($appInstallSource = $item.GetValue('InstallSource', $null)) -and ![System.String]::IsNullOrWhiteSpace($appInstallSource)) { $appInstallSource.TrimStart('"').TrimEnd('"') }),
+                        $(if (($appInstallLocation = $item.GetValue('InstallLocation', $null)) -and ![System.String]::IsNullOrWhiteSpace($appInstallLocation)) { $appInstallLocation.TrimStart('"').TrimEnd('"') }),
                         $installDate,
                         $(if (($appPublisher = $item.GetValue('Publisher', $null)) -and ![System.String]::IsNullOrWhiteSpace($appPublisher)) { $appPublisher }),
                         $(if ([System.Uri]::TryCreate($item.GetValue('HelpLink', [System.String]::Empty), [System.UriKind]::Absolute, [ref]$defUriValue)) { $defUriValue }),
@@ -8291,9 +8373,9 @@ function Get-ADTShortcut
                         {
                             switch ($_)
                             {
-                                { $_.StartsWith('URL=') } { $Output.TargetPath = $_.Replace('URL=', $null); break }
-                                { $_.StartsWith('IconIndex=') } { $Output.IconIndex = $_.Replace('IconIndex=', $null); break }
-                                { $_.StartsWith('IconFile=') } { $Output.IconLocation = $_.Replace('IconFile=', $null); break }
+                                { $_.StartsWith('URL=') } { $Output.TargetPath = $_.Replace('URL=', [System.Management.Automation.Language.NullString]::Value); break }
+                                { $_.StartsWith('IconIndex=') } { $Output.IconIndex = $_.Replace('IconIndex=', [System.Management.Automation.Language.NullString]::Value); break }
+                                { $_.StartsWith('IconFile=') } { $Output.IconLocation = $_.Replace('IconFile=', [System.Management.Automation.Language.NullString]::Value); break }
                             }
                         }
                     }
@@ -11789,7 +11871,7 @@ function New-ADTTemplate
                         LiteralPath = "$templatePath\Invoke-AppDeployToolkit.ps1"
                         Encoding = ('utf8', 'utf8BOM')[$PSVersionTable.PSEdition.Equals('Core')]
                     }
-                    & $Script:CommandTable.'Out-File' -InputObject (& $Script:CommandTable.'Get-Content' @params -Raw).Replace('..\..\..\', $null).Replace('2000-12-31', [System.DateTime]::Now.ToString('O').Split('T')[0]) @params -Width ([System.Int32]::MaxValue) -Force
+                    & $Script:CommandTable.'Out-File' -InputObject (& $Script:CommandTable.'Get-Content' @params -Raw).Replace('..\..\..\', [System.Management.Automation.Language.NullString]::Value).Replace('2000-12-31', [System.DateTime]::Now.ToString('O').Split('T')[0]) @params -Width ([System.Int32]::MaxValue) -Force
                 }
 
                 # Display the newly created folder in Windows Explorer.
@@ -13631,7 +13713,7 @@ function Remove-ADTFolder
                     if ($SubfoldersSkipped)
                     {
                         $naerParams = @{
-                            Exception = [System.IO.IOException]::new("The following subfolders are not empty ['$([System.String]::Join("'; '", $SubfoldersSkipped.FullName.Replace("$($item.FullName)\", $null)))'].")
+                            Exception = [System.IO.IOException]::new("The following subfolders are not empty ['$([System.String]::Join("'; '", $SubfoldersSkipped.FullName.Replace("$($item.FullName)\", [System.Management.Automation.Language.NullString]::Value)))'].")
                             Category = [System.Management.Automation.ErrorCategory]::InvalidOperation
                             ErrorId = 'NonEmptySubfolderError'
                             TargetObject = $SubfoldersSkipped
@@ -14004,18 +14086,18 @@ function Remove-ADTInvalidFileNameChars
     param
     (
         [Parameter(Mandatory = $true, ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true)]
-        [AllowEmptyString()]
+        [ValidateNotNullOrEmpty()]
         [System.String]$Name
     )
 
     begin
     {
-        $invalidChars = [System.Text.RegularExpressions.Regex]::new("[$([System.Text.RegularExpressions.Regex]::Escape([System.String]::Join([System.String]::Empty, [System.IO.Path]::GetInvalidFileNameChars())))]", [System.Text.RegularExpressions.RegexOptions]::Compiled)
+        $invalidChars = [System.Text.RegularExpressions.Regex]::new("[$([System.Text.RegularExpressions.Regex]::Escape([System.String]::Join([System.Management.Automation.Language.NullString]::Value, [System.IO.Path]::GetInvalidFileNameChars())))]", [System.Text.RegularExpressions.RegexOptions]::Compiled)
     }
 
     process
     {
-        return $invalidChars.Replace($Name.Trim(), [System.String]::Empty)
+        return $invalidChars.Replace($Name, [System.String]::Empty).Trim()
     }
 }
 
@@ -14264,14 +14346,14 @@ function Remove-ADTRegistryKey
                         return
                     }
                     & $Script:CommandTable.'Write-ADTLogEntry' -Message "Deleting registry value [$($pathParam.($PSCmdlet.ParameterSetName))] [$Name]."
-                    if ($Name -eq '(Default)')
+                    $null = if ($Name -eq '(Default)')
                     {
                         # Remove (Default) registry key value with the following workaround because Remove-ItemProperty cannot remove the (Default) registry key value.
-                        $null = (& $Script:CommandTable.'Get-Item' @pathParam).OpenSubKey('', 'ReadWriteSubTree').DeleteValue('')
+                        (& $Script:CommandTable.'Get-Item' @pathParam).OpenSubKey([System.String]::Empty, [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree).DeleteValue([System.String]::Empty)
                     }
                     else
                     {
-                        $null = & $Script:CommandTable.'Remove-ItemProperty' @pathParam -Name $Name -Force
+                        & $Script:CommandTable.'Remove-ItemProperty' @pathParam -Name $Name -Force
                     }
                 }
             }
@@ -14896,7 +14978,21 @@ function Set-ADTActiveSetup
 
         [Parameter(Mandatory = $false, ParameterSetName = 'Create')]
         [Parameter(Mandatory = $false, ParameterSetName = 'CreateNoExecute')]
-        [ValidateNotNullOrEmpty()]
+        [ValidateScript({
+                if ([System.String]::IsNullOrWhiteSpace($_))
+                {
+                    $PSCmdlet.ThrowTerminatingError((& $Script:CommandTable.'New-ADTValidateScriptErrorRecord' -ParameterName Version -ProvidedValue $_ -ExceptionMessage 'The specified input was null or an empty string.'))
+                }
+                if ($_ -notmatch '^\d+(?:(?:([.,])\d+)(?:\1\d+)*)?$')
+                {
+                    $PSCmdlet.ThrowTerminatingError((& $Script:CommandTable.'New-ADTValidateScriptErrorRecord' -ParameterName Version -ProvidedValue $_ -ExceptionMessage 'The specified input should consist of numbers and dots/commas to separate version segments.'))
+                }
+                if ([System.Text.RegularExpressions.Regex]::Matches($_, '\.|,').Count -gt 3)
+                {
+                    $PSCmdlet.ThrowTerminatingError((& $Script:CommandTable.'New-ADTValidateScriptErrorRecord' -ParameterName Version -ProvidedValue $_ -ExceptionMessage 'The specified input can only have a maximum of four octets.'))
+                }
+                return !!$_
+            })]
         [System.String]$Version = [System.DateTime]::Now.ToString('yyMM,ddHH,mmss'), # Ex: 1405,1515,0522
 
         [Parameter(Mandatory = $false, ParameterSetName = 'Create')]
@@ -14999,6 +15095,108 @@ function Set-ADTActiveSetup
                 [System.String]$SID
             )
 
+            # Internal worker for parsing the version number out.
+            function Get-ADTActiveSetupVersion
+            {
+                [CmdletBinding()]
+                [OutputType([System.Version])]
+                param
+                (
+                    [Parameter(Mandatory = $true)]
+                    [ValidateNotNullOrEmpty()]
+                    [System.String]$InputObject
+                )
+
+                # Sanitise the input string.
+                return $InputObject.GetEnumerator() | & {
+                    begin
+                    {
+                        # Open a buffer to store each individual character in the string.
+                        $chars = [System.Collections.Generic.List[System.Char]]::new()
+                    }
+                    process
+                    {
+                        # Only digits or dots/commas are valud.
+                        if ([System.Char]::IsDigit($_) -or ($_ -eq '.'))
+                        {
+                            $chars.Add($_)
+                        }
+                        elseif ($_ -eq ',')
+                        {
+                            $chars.Add('.')
+                        }
+                    }
+                    end
+                    {
+                        # Return null if we've got nothing.
+                        if ($chars.Count -eq 0)
+                        {
+                            return
+                        }
+
+                        # Return null if we've got no digits to work with.
+                        if (!($chars -match '^\d$'))
+                        {
+                            return
+                        }
+
+                        # Strip any leading and consecutive delimiters.
+                        [System.Collections.Generic.List[System.Char]]$chars = [System.Char[]]($chars.GetEnumerator() | & {
+                                begin
+                                {
+                                    $chars = [System.Collections.Generic.List[System.Char]]::new()
+                                    $skip = $true
+                                }
+                                process
+                                {
+                                    if (!$skip -or [System.Char]::IsDigit($_))
+                                    {
+                                        if ([System.Char]::IsDigit($_) -or !$chars.Count -or ($chars[-1] -ne '.'))
+                                        {
+                                            $chars.Add($_)
+                                        }
+                                        $skip = $false
+                                    }
+                                }
+                                end
+                                {
+                                    return $chars
+                                }
+                            })
+
+                        # Return null if we've got more than four octets (not a valid version).
+                        if (($delimiters = ($chars.GetEnumerator() | & { process { if ($_ -match '^\.$') { return $_ } } } | & $Script:CommandTable.'Measure-Object').Count) -gt 3)
+                        {
+                            return
+                        }
+
+                        # If we've got no delimiters at all, add .0 onto the end so we've got a valid version number.
+                        if ($delimiters -eq 0)
+                        {
+                            $chars.AddRange([System.Char[]]('.', '0'))
+                        }
+
+                        # If we've got a delimiter but for some reason it's the last entry, just tack on a 0 and move on.
+                        if ($chars[-1] -match '^\.$')
+                        {
+                            $chars.Add('0')
+                        }
+
+                        # Finally, padd out the version to a full four octets.
+                        if (($padding = 3 - ($chars.GetEnumerator() | & { process { if ($_ -match '^\.$') { return $_ } } } | & $Script:CommandTable.'Measure-Object').Count) -gt 0)
+                        {
+                            for ($i = 0; $i -lt $padding; $i++)
+                            {
+                                $chars.AddRange([System.Char[]]('.', '0'))
+                            }
+                        }
+
+                        # Join the characters back into a string and return as a version to the caller.
+                        return [System.Version][System.String]::Join([System.Management.Automation.Language.NullString]::Value, $chars)
+                    }
+                }
+            }
+
             # Set up initial variables.
             $HKCUProps = if ($SID)
             {
@@ -15049,14 +15247,14 @@ function Set-ADTActiveSetup
             }
 
             # After cleanup, the HKLM Version property is empty. Considering it missing. HKCU is present so nothing to run.
-            if (!([System.Object]$HKLMValidVer = [System.String]::Join([System.String]::Empty, ($HKLMVer.GetEnumerator() | & { process { if ([System.Char]::IsDigit($_)) { return $_ } elseif ($_ -eq ',') { return '.' } } }))) -or ![System.Version]::TryParse($HKLMValidVer, [ref]$HKLMValidVer))
+            if (!($HKLMValidVer = Get-ADTActiveSetupVersion -InputObject $HKLMVer))
             {
                 & $Script:CommandTable.'Write-ADTLogEntry' 'HKLM and HKCU active setup entries are present. HKLM Version property is invalid.'
                 return $false
             }
 
             # After cleanup, the HKCU Version property is empty while HKLM Version property is not. Run the StubPath.
-            if (!([System.Object]$HKCUValidVer = [System.String]::Join([System.String]::Empty, ($HKCUVer.GetEnumerator() | & { process { if ([System.Char]::IsDigit($_)) { return $_ } elseif ($_ -eq ',') { return '.' } } }))) -or ![System.Version]::TryParse($HKCUValidVer, [ref]$HKCUValidVer))
+            if (!($HKCUValidVer = Get-ADTActiveSetupVersion -InputObject $HKCUVer))
             {
                 & $Script:CommandTable.'Write-ADTLogEntry' 'HKLM and HKCU active setup entries are present. HKCU Version property is invalid.'
                 return $true
@@ -15097,7 +15295,7 @@ function Set-ADTActiveSetup
                 [System.String]$Version = [System.Management.Automation.Language.NullString]::Value,
 
                 [Parameter(Mandatory = $false)]
-                [AllowEmptyString()]
+                [ValidateNotNullOrEmpty()]
                 [System.String]$Locale = [System.Management.Automation.Language.NullString]::Value,
 
                 [Parameter(Mandatory = $false)]
@@ -15106,7 +15304,7 @@ function Set-ADTActiveSetup
 
             $srkParams = if ($SID) { @{ SID = $SID } } else { @{} }
             & $Script:CommandTable.'Set-ADTRegistryKey' -Key $RegPath -Name '(Default)' -Value $Description @srkParams
-            & $Script:CommandTable.'Set-ADTRegistryKey' -Key $RegPath -Name 'Version' -Value $Version @srkParams
+            & $Script:CommandTable.'Set-ADTRegistryKey' -Key $RegPath -Name 'Version' -Value $Version.Replace('.', ',') @srkParams
             & $Script:CommandTable.'Set-ADTRegistryKey' -Key $RegPath -Name 'StubPath' -Value $StubPath -Type ExpandString @srkParams
             if (![System.String]::IsNullOrWhiteSpace($Locale))
             {
@@ -15148,7 +15346,7 @@ function Set-ADTActiveSetup
 
                     # All remaining users thereafter.
                     & $Script:CommandTable.'Write-ADTLogEntry' -Message "Removing Active Setup entry [$HKCURegKey] for all logged on user registry hives on the system."
-                    & $Script:CommandTable.'Invoke-ADTAllUsersRegistryAction' -UserProfiles (& $Script:CommandTable.'Get-ADTUserProfiles' -ExcludeDefaultUser | & { process { if ($_.SID -eq $runAsActiveUser.SID) { return $_ } } } | & $Script:CommandTable.'Select-Object' -First 1) -ScriptBlock {
+                    & $Script:CommandTable.'Invoke-ADTAllUsersRegistryAction' -UserProfiles (& $Script:CommandTable.'Get-ADTUserProfiles' -ExcludeDefaultUser) -ScriptBlock {
                         if (& $Script:CommandTable.'Get-ADTRegistryKey' -Key $HKCURegKey -SID $_.SID)
                         {
                             & $Script:CommandTable.'Remove-ADTRegistryKey' -Key $HKCURegKey -SID $_.SID -Recurse
@@ -15254,8 +15452,11 @@ function Set-ADTActiveSetup
                 # Define common parameters split for Set-ADTActiveSetupRegistryEntry.
                 $sasreParams = @{
                     Version = $Version
-                    Locale = $Locale
                     DisableActiveSetup = $DisableActiveSetup
+                }
+                if ($PSBoundParameters.ContainsKey('Locale'))
+                {
+                    $sasreParams.Add('Locale', $Locale)
                 }
 
                 # Create the Active Setup entry in the registry.
@@ -15311,7 +15512,7 @@ function Set-ADTActiveSetup
                     {
                         if ($StubExeExt -eq '.ps1')
                         {
-                            $CUArguments = $CUArguments.Replace("-WindowStyle Hidden ", $null)
+                            $CUArguments = $CUArguments.Replace("-WindowStyle Hidden ", [System.Management.Automation.Language.NullString]::Value)
                         }
                         & $Script:CommandTable.'Start-ADTProcess' -FilePath $CUStubExePath -UseUnelevatedToken -CreateNoWindow -PassThru:$PassThru -ArgumentList $CUArguments
                     }
@@ -15966,6 +16167,12 @@ function Set-ADTItemPermission
     .PARAMETER EnableInheritance
         Enables inheritance on the files/folders.
 
+    .PARAMETER DisableInheritance
+        Disables inheritance, preserving permissions before doing so.
+
+    .PARAMETER RemoveExplicitRules
+        Removes non-inherited permissions from the object when enabling inheritance.
+
     .INPUTS
         None
 
@@ -16053,8 +16260,14 @@ function Set-ADTItemPermission
         [Alias('ApplyMethod', 'ApplicationMethod')]
         [System.String]$Method = 'AddAccessRule',
 
-        [Parameter(Mandatory = $true, HelpMessage = 'Enables inheritance, which removes explicit permissions.', ParameterSetName = 'EnableInheritance')]
-        [System.Management.Automation.SwitchParameter]$EnableInheritance
+        [Parameter(Mandatory = $false, HelpMessage = 'Disables inheritance, preserving permissions before doing so.', ParameterSetName = 'DisableInheritance')]
+        [System.Management.Automation.SwitchParameter]$DisableInheritance,
+
+        [Parameter(Mandatory = $true, HelpMessage = 'Enables inheritance on the files/folders.', ParameterSetName = 'EnableInheritance')]
+        [System.Management.Automation.SwitchParameter]$EnableInheritance,
+
+        [Parameter(Mandatory = $false, HelpMessage = 'Removes non-inherited permissions from the object when enabling inheritance.', ParameterSetName = 'EnableInheritance')]
+        [System.Management.Automation.SwitchParameter]$RemoveExplicitRules
     )
 
     begin
@@ -16068,20 +16281,35 @@ function Set-ADTItemPermission
         {
             try
             {
+                # Get the FileInfo/DirectoryInfo for the specified LiteralPath.
+                $pathInfo = & $Script:CommandTable.'Get-Item' -LiteralPath $LiteralPath
+
                 # Directly apply the permissions if an ACL object has been provided.
                 if ($PSCmdlet.ParameterSetName.Equals('AccessControlList'))
                 {
                     & $Script:CommandTable.'Write-ADTLogEntry' -Message "Setting specifieds ACL on path [$LiteralPath]."
-                    $null = & $Script:CommandTable.'Set-Acl' -LiteralPath $LiteralPath -AclObject $AccessControlList
+                    [System.IO.FileSystemAclExtensions]::SetAccessControl($pathInfo, $AccessControlList)
                     return
                 }
+
+                # Get object ACLs for the given path.
+                $Acl = & $Script:CommandTable.'Get-Acl' -LiteralPath $pathInfo.FullName
 
                 # Get object ACLs and enable inheritance.
                 if ($EnableInheritance)
                 {
-                    ($Acl = & $Script:CommandTable.'Get-Acl' -LiteralPath $LiteralPath).SetAccessRuleProtection($false, $true)
                     & $Script:CommandTable.'Write-ADTLogEntry' -Message "Enabling Inheritance on path [$LiteralPath]."
-                    $null = & $Script:CommandTable.'Set-Acl' -LiteralPath $LiteralPath -AclObject $Acl
+                    $Acl.SetAccessRuleProtection($false, $true)
+                    if ($RemoveExplicitRules)
+                    {
+                        $Acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) | & {
+                            process
+                            {
+                                $Acl.RemoveAccessRuleSpecific($_)
+                            }
+                        }
+                    }
+                    [System.IO.FileSystemAclExtensions]::SetAccessControl($pathInfo, $Acl)
                     return
                 }
 
@@ -16093,8 +16321,12 @@ function Set-ADTItemPermission
                     $Propagation = [System.Security.AccessControl.PropagationFlags]::None
                 }
 
-                # Get object ACLs for the given path.
-                $Acl = & $Script:CommandTable.'Get-Acl' -LiteralPath $LiteralPath
+                # Disable inheritance if asked to do so.
+                if ($DisableInheritance)
+                {
+                    $Acl.SetAccessRuleProtection($true, $true); [System.IO.FileSystemAclExtensions]::SetAccessControl($pathInfo, $Acl)
+                    $Acl = & $Script:CommandTable.'Get-Acl' -LiteralPath $pathInfo.FullName
+                }
 
                 # Apply permissions on each user.
                 foreach ($Username in $User.Trim())
@@ -16117,7 +16349,7 @@ function Set-ADTItemPermission
                 }
 
                 # Use the prepared ACL.
-                $null = & $Script:CommandTable.'Set-Acl' -LiteralPath $LiteralPath -AclObject $Acl
+                [System.IO.FileSystemAclExtensions]::SetAccessControl($pathInfo, $Acl)
             }
             catch
             {
@@ -17594,14 +17826,14 @@ function Show-ADTInstallationProgress
         # Add in parameters we need as mandatory when there's no active ADTSession.
         $paramDictionary.Add('Title', [System.Management.Automation.RuntimeDefinedParameter]::new(
                 'Title', [System.String], $(
-                    [System.Management.Automation.ParameterAttribute]@{ Mandatory = !$adtSession; HelpMessage = 'The title of the window to be displayed. The default is the derived value from "$($adtSession.InstallTitle)".' }
+                    [System.Management.Automation.ParameterAttribute]@{ Mandatory = !$adtSession; HelpMessage = "The title of the window to be displayed. Optionally used to override the active DeploymentSession's `InstallTitle` value." }
                     [System.Management.Automation.AliasAttribute]::new('WindowTitle')
                     [System.Management.Automation.ValidateNotNullOrEmptyAttribute]::new()
                 )
             ))
         $paramDictionary.Add('Subtitle', [System.Management.Automation.RuntimeDefinedParameter]::new(
                 'Subtitle', [System.String], $(
-                    [System.Management.Automation.ParameterAttribute]@{ Mandatory = !$adtSession -and ($adtConfig.UI.DialogStyle -eq 'Fluent'); HelpMessage = 'The subtitle of the window to be displayed with a fluent progress window. The default is the derived value from "$($adtSession.DeploymentType)".' }
+                    [System.Management.Automation.ParameterAttribute]@{ Mandatory = !$adtSession -and ($adtConfig.UI.DialogStyle -eq 'Fluent'); HelpMessage = "The subtitle of the window to be displayed with a fluent progress window. Optionally used to override the subtitle defined in the `strings.psd1` file." }
                     [System.Management.Automation.AliasAttribute]::new('WindowSubtitle')
                     [System.Management.Automation.ValidateNotNullOrEmptyAttribute]::new()
                 )
@@ -17695,6 +17927,7 @@ function Show-ADTInstallationProgress
                         AppIconDarkImage = $adtConfig.Assets.LogoDark
                         AppBannerImage = $adtConfig.Assets.Banner
                         DialogTopMost = !$NotTopMost
+                        Language = $Script:ADT.Language
                         ProgressMessageText = $PSBoundParameters.StatusMessage
                         ProgressDetailMessageText = $PSBoundParameters.StatusMessageDetail
                     }
@@ -17852,7 +18085,18 @@ function Show-ADTInstallationPrompt
         This function does not generate any output.
 
     .EXAMPLE
-        Show-ADTInstallationPrompt -Message 'Do you want to proceed with the installation?' -ButtonLeftText 'Yes' -ButtonRightText 'No'
+        ```powershell
+        $result = Show-ADTInstallationPrompt -Message 'Do you want to proceed with the installation?' -ButtonLeftText Yes -ButtonRightText No
+        switch ($result)
+        {
+            Yes {
+                Write-ADTLogEntry "User clicked the [Yes] button."
+            }
+            No {
+                Write-ADTLogEntry "User clicked the [No] button."
+            }
+        }
+        ```
 
     .EXAMPLE
         Show-ADTInstallationPrompt -Title 'Funny Prompt' -Message 'How are you feeling today?' -ButtonLeftText 'Good' -ButtonRightText 'Bad' -ButtonMiddleText 'Indifferent'
@@ -17947,13 +18191,13 @@ function Show-ADTInstallationPrompt
         # Add in parameters we need as mandatory when there's no active ADTSession.
         $paramDictionary.Add('Title', [System.Management.Automation.RuntimeDefinedParameter]::new(
                 'Title', [System.String], $(
-                    [System.Management.Automation.ParameterAttribute]@{ Mandatory = !$adtSession; HelpMessage = 'Title of the prompt.' }
+                    [System.Management.Automation.ParameterAttribute]@{ Mandatory = !$adtSession; HelpMessage = "Title of the prompt. Optionally used to override the active DeploymentSession's `InstallTitle` value." }
                     [System.Management.Automation.ValidateNotNullOrEmptyAttribute]::new()
                 )
             ))
         $paramDictionary.Add('Subtitle', [System.Management.Automation.RuntimeDefinedParameter]::new(
                 'Subtitle', [System.String], $(
-                    [System.Management.Automation.ParameterAttribute]@{ Mandatory = !$adtSession; HelpMessage = 'Subtitle of the prompt.' }
+                    [System.Management.Automation.ParameterAttribute]@{ Mandatory = !$adtSession; HelpMessage = "Subtitle of the prompt. Optionally used to override the subtitle defined in the `strings.psd1` file." }
                     [System.Management.Automation.ValidateNotNullOrEmptyAttribute]::new()
                 )
             ))
@@ -18049,6 +18293,7 @@ function Show-ADTInstallationPrompt
                     AppIconDarkImage = $adtConfig.Assets.LogoDark
                     AppBannerImage = $adtConfig.Assets.Banner
                     DialogTopMost = !$NotTopMost
+                    Language = $Script:ADT.Language
                     MinimizeWindows = !!$MinimizeWindows
                     DialogExpiryDuration = $PSBoundParameters.Timeout
                     MessageText = $Message
@@ -18110,7 +18355,7 @@ function Show-ADTInstallationPrompt
                 if ($NoWait)
                 {
                     & $Script:CommandTable.'Write-ADTLogEntry' -Message "Displaying custom installation prompt asynchronously to [$($runAsActiveUser.NTAccount)] with message: [$Message]."
-                    & $Script:CommandTable.'Invoke-ADTClientServerOperation' -ShowModalDialog -User $runAsActiveUser -DialogType $PSCmdlet.ParameterSetName.Replace('Show', $null) -DialogStyle $adtConfig.UI.DialogStyle -Options $dialogOptions -NoWait
+                    & $Script:CommandTable.'Invoke-ADTClientServerOperation' -ShowModalDialog -User $runAsActiveUser -DialogType $PSCmdlet.ParameterSetName.Replace('Show', [System.Management.Automation.Language.NullString]::Value) -DialogStyle $adtConfig.UI.DialogStyle -Options $dialogOptions -NoWait
                     return
                 }
 
@@ -18126,7 +18371,7 @@ function Show-ADTInstallationPrompt
                 {
                     $result = try
                     {
-                        & $Script:CommandTable.'Invoke-ADTClientServerOperation' -ShowModalDialog -User $runAsActiveUser -DialogType $PSCmdlet.ParameterSetName.Replace('Show', $null) -DialogStyle $adtConfig.UI.DialogStyle -Options $dialogOptions
+                        & $Script:CommandTable.'Invoke-ADTClientServerOperation' -ShowModalDialog -User $runAsActiveUser -DialogType $PSCmdlet.ParameterSetName.Replace('Show', [System.Management.Automation.Language.NullString]::Value) -DialogStyle $adtConfig.UI.DialogStyle -Options $dialogOptions
                     }
                     catch [System.ApplicationException]
                     {
@@ -18303,13 +18548,13 @@ function Show-ADTInstallationRestartPrompt
         # Add in parameters we need as mandatory when there's no active ADTSession.
         $paramDictionary.Add('Title', [System.Management.Automation.RuntimeDefinedParameter]::new(
                 'Title', [System.String], $(
-                    [System.Management.Automation.ParameterAttribute]@{ Mandatory = !$adtSession; HelpMessage = 'Title of the prompt.' }
+                    [System.Management.Automation.ParameterAttribute]@{ Mandatory = !$adtSession; HelpMessage = "Title of the prompt. Optionally used to override the active DeploymentSession's `InstallTitle` value." }
                     [System.Management.Automation.ValidateNotNullOrEmptyAttribute]::new()
                 )
             ))
         $paramDictionary.Add('Subtitle', [System.Management.Automation.RuntimeDefinedParameter]::new(
                 'Subtitle', [System.String], $(
-                    [System.Management.Automation.ParameterAttribute]@{ Mandatory = !$adtSession; HelpMessage = 'Subtitle of the prompt.' }
+                    [System.Management.Automation.ParameterAttribute]@{ Mandatory = !$adtSession; HelpMessage = "Subtitle of the prompt. Optionally used to override the subtitle defined in the `strings.psd1` file." }
                     [System.Management.Automation.ValidateNotNullOrEmptyAttribute]::new()
                 )
             ))
@@ -18404,6 +18649,7 @@ function Show-ADTInstallationRestartPrompt
                     AppIconDarkImage = $adtConfig.Assets.LogoDark
                     AppBannerImage = $adtConfig.Assets.Banner
                     DialogTopMost = !$NotTopMost
+                    Language = $Script:ADT.Language
                     Strings = $adtStrings.RestartPrompt
                 }
                 if (!$NoCountdown)
@@ -18561,7 +18807,7 @@ function Show-ADTInstallationWelcome
         Specifies that the user can move the dialog on the screen.
 
     .PARAMETER CustomText
-        Specify whether to display a custom message specified in the `strings.psd1` file. Custom message must be populated for each language section in the `strings.psd1` file.
+        Specify whether to display a custom message as specified in the `strings.psd1` file below the main preamble. Custom message must be populated for each language section in the `strings.psd1` file.
 
     .PARAMETER CheckDiskSpace
         Specify whether to check if there is enough disk space for the deployment to proceed.
@@ -19162,13 +19408,13 @@ function Show-ADTInstallationWelcome
         # Add in parameters we need as mandatory when there's no active ADTSession.
         $paramDictionary.Add('Title', [System.Management.Automation.RuntimeDefinedParameter]::new(
                 'Title', [System.String], $(
-                    [System.Management.Automation.ParameterAttribute]@{ Mandatory = !$adtSession; HelpMessage = "Title of the prompt." }
+                    [System.Management.Automation.ParameterAttribute]@{ Mandatory = !$adtSession; HelpMessage = "Title of the prompt. Optionally used to override the active DeploymentSession's `InstallTitle` value." }
                     [System.Management.Automation.ValidateNotNullOrEmptyAttribute]::new()
                 )
             ))
         $paramDictionary.Add('Subtitle', [System.Management.Automation.RuntimeDefinedParameter]::new(
                 'Subtitle', [System.String], $(
-                    [System.Management.Automation.ParameterAttribute]@{ Mandatory = !$adtSession -and ($adtConfig.UI.DialogStyle -eq 'Fluent'); HelpMessage = "Subtitle of the prompt." }
+                    [System.Management.Automation.ParameterAttribute]@{ Mandatory = !$adtSession -and ($adtConfig.UI.DialogStyle -eq 'Fluent'); HelpMessage = "Subtitle of the prompt. Optionally used to override the subtitle defined in the `strings.psd1` file." }
                     [System.Management.Automation.ValidateNotNullOrEmptyAttribute]::new()
                 )
             ))
@@ -19444,6 +19690,7 @@ function Show-ADTInstallationWelcome
                         AppIconDarkImage = $adtConfig.Assets.LogoDark
                         AppBannerImage = $adtConfig.Assets.Banner
                         DialogTopMost = !$NotTopMost
+                        Language = $Script:ADT.Language
                         MinimizeWindows = !!$MinimizeWindows
                         DialogExpiryDuration = [System.TimeSpan]::FromSeconds($adtConfig.UI.DefaultTimeout)
                         Strings = $adtStrings.CloseAppsPrompt
@@ -19586,17 +19833,17 @@ function Show-ADTInstallationWelcome
                             & $Script:CommandTable.'Write-ADTLogEntry' -Message 'The user selected to force the application(s) to close...'
                             if (($runningApps = if ($CloseProcesses) { & $Script:CommandTable.'Get-ADTRunningProcesses' -ProcessObjects $CloseProcesses -InformationAction Ignore }))
                             {
-                                if ($PromptToSave)
-                                {
-                                    & $Script:CommandTable.'Invoke-ADTClientServerOperation' -PromptToCloseApps -User $runAsActiveUser -PromptToCloseTimeout ([System.TimeSpan]::FromSeconds($adtConfig.UI.PromptToSaveTimeout))
-                                }
-                                else
+                                if (!$PromptToSave)
                                 {
                                     foreach ($runningApp in $runningApps)
                                     {
                                         & $Script:CommandTable.'Write-ADTLogEntry' -Message "Stopping process [$($runningApp.Process.ProcessName)]..."
                                         & $Script:CommandTable.'Stop-Process' -Name $runningApp.Process.ProcessName -Force -ErrorAction Ignore
                                     }
+                                }
+                                else
+                                {
+                                    & $Script:CommandTable.'Invoke-ADTClientServerOperation' -PromptToCloseApps -User $runAsActiveUser -PromptToCloseTimeout ([System.TimeSpan]::FromSeconds($adtConfig.UI.PromptToSaveTimeout))
                                 }
 
                                 # Test whether apps are still running. If they are still running, the Welcome Window will be displayed again after 5 seconds.
@@ -19684,7 +19931,6 @@ function Show-ADTInstallationWelcome
                 # If block execution switch is true, call the function to block execution of these processes.
                 if ($BlockExecution -and $CloseProcesses)
                 {
-                    & $Script:CommandTable.'Write-ADTLogEntry' -Message '[-BlockExecution] parameter specified.'
                     $baaeParams = @{ ProcessName = $CloseProcesses.Name }
                     if ($PSBoundParameters.ContainsKey('WindowLocation'))
                     {
@@ -19770,8 +20016,8 @@ function Start-ADTMsiProcess
     .PARAMETER Patches
         The name(s) of the patch (MSP) file(s) to be applied to the MSI for the "Install" action. The patch files should be in the same directory as the MSI file.
 
-    .PARAMETER Username
-        A username to invoke the process as. Only supported while running as the SYSTEM account.
+    .PARAMETER RunAsActiveUser
+        A RunAsActiveUser object to invoke the process as.
 
     .PARAMETER UseLinkedAdminToken
         Use a user's linked administrative token while running the process under their context.
@@ -19890,8 +20136,11 @@ function Start-ADTMsiProcess
         [System.String]$Action = 'Install',
 
         [Parameter(Mandatory = $true, ParameterSetName = 'FilePath', ValueFromPipeline = $true, HelpMessage = 'Please supply the path to the MSI/MSP file to process.')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_FilePath', ValueFromPipeline = $true, HelpMessage = 'Please supply the path to the MSI/MSP file to process.')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'FilePath_NoWait', ValueFromPipeline = $true, HelpMessage = 'Please supply the path to the MSI/MSP file to process.')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_FilePath', ValueFromPipeline = $true, HelpMessage = 'Please supply the path to the MSI/MSP file to process.')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_FilePath_NoWait', ValueFromPipeline = $true, HelpMessage = 'Please supply the path to the MSI/MSP file to process.')]
         [Parameter(Mandatory = $true, ParameterSetName = 'UseUnelevatedToken_FilePath', ValueFromPipeline = $true, HelpMessage = 'Please supply the path to the MSI/MSP file to process.')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'UseUnelevatedToken_FilePath_NoWait', ValueFromPipeline = $true, HelpMessage = 'Please supply the path to the MSI/MSP file to process.')]
         [ValidateScript({
                 if ([System.IO.Path]::GetExtension($_) -notmatch '^\.ms[ip]$')
                 {
@@ -19902,14 +20151,20 @@ function Start-ADTMsiProcess
         [System.String]$FilePath = [System.Management.Automation.Language.NullString]::Value,
 
         [Parameter(Mandatory = $true, ParameterSetName = 'ProductCode', ValueFromPipeline = $true, HelpMessage = 'Please supply the Product Code to process.')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_ProductCode', ValueFromPipeline = $true, HelpMessage = 'Please supply the Product Code to process.')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'ProductCode_NoWait', ValueFromPipeline = $true, HelpMessage = 'Please supply the Product Code to process.')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_ProductCode', ValueFromPipeline = $true, HelpMessage = 'Please supply the Product Code to process.')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_ProductCode_NoWait', ValueFromPipeline = $true, HelpMessage = 'Please supply the Product Code to process.')]
         [Parameter(Mandatory = $true, ParameterSetName = 'UseUnelevatedToken_ProductCode', ValueFromPipeline = $true, HelpMessage = 'Please supply the Product Code to process.')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'UseUnelevatedToken_ProductCode_NoWait', ValueFromPipeline = $true, HelpMessage = 'Please supply the Product Code to process.')]
         [ValidateNotNullOrEmpty()]
         [System.Guid]$ProductCode,
 
         [Parameter(Mandatory = $true, ParameterSetName = 'InstalledApplication', ValueFromPipeline = $true, HelpMessage = 'Please supply the InstalledApplication object to process.')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_InstalledApplication', ValueFromPipeline = $true, HelpMessage = 'Please supply the InstalledApplication object to process.')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'InstalledApplication_NoWait', ValueFromPipeline = $true, HelpMessage = 'Please supply the InstalledApplication object to process.')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_InstalledApplication', ValueFromPipeline = $true, HelpMessage = 'Please supply the InstalledApplication object to process.')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_InstalledApplication_NoWait', ValueFromPipeline = $true, HelpMessage = 'Please supply the InstalledApplication object to process.')]
         [Parameter(Mandatory = $true, ParameterSetName = 'UseUnelevatedToken_InstalledApplication', ValueFromPipeline = $true, HelpMessage = 'Please supply the InstalledApplication object to process.')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'UseUnelevatedToken_InstalledApplication_NoWait', ValueFromPipeline = $true, HelpMessage = 'Please supply the InstalledApplication object to process.')]
         [ValidateNotNullOrEmpty()]
         [PSADT.Types.InstalledApplication]$InstalledApplication,
 
@@ -19937,30 +20192,45 @@ function Start-ADTMsiProcess
         [ValidateNotNullOrEmpty()]
         [System.String[]]$Patches,
 
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_FilePath')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_ProductCode')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_InstalledApplication')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_FilePath')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_FilePath_NoWait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_ProductCode')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_ProductCode_NoWait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_InstalledApplication')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_InstalledApplication_NoWait')]
         [ValidateNotNullOrEmpty()]
-        [System.Security.Principal.NTAccount]$Username,
+        [PSADT.Module.RunAsActiveUser]$RunAsActiveUser,
 
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_FilePath')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_ProductCode')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_InstalledApplication')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_FilePath')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_FilePath_NoWait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_ProductCode')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_ProductCode_NoWait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_InstalledApplication')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_InstalledApplication_NoWait')]
         [System.Management.Automation.SwitchParameter]$UseLinkedAdminToken,
 
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_FilePath')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_ProductCode')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_InstalledApplication')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_FilePath')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_FilePath_NoWait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_ProductCode')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_ProductCode_NoWait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_InstalledApplication')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_InstalledApplication_NoWait')]
         [System.Management.Automation.SwitchParameter]$UseHighestAvailableToken,
 
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_FilePath')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_ProductCode')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_InstalledApplication')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_FilePath')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_FilePath_NoWait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_ProductCode')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_ProductCode_NoWait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_InstalledApplication')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_InstalledApplication_NoWait')]
         [System.Management.Automation.SwitchParameter]$InheritEnvironmentVariables,
 
         [Parameter(Mandatory = $true, ParameterSetName = 'UseUnelevatedToken_FilePath')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'UseUnelevatedToken_FilePath_NoWait')]
         [Parameter(Mandatory = $true, ParameterSetName = 'UseUnelevatedToken_ProductCode')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'UseUnelevatedToken_ProductCode_NoWait')]
         [Parameter(Mandatory = $true, ParameterSetName = 'UseUnelevatedToken_InstalledApplication')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'UseUnelevatedToken_InstalledApplication_NoWait')]
         [System.Management.Automation.SwitchParameter]$UseUnelevatedToken,
 
         [Parameter(Mandatory = $false)]
@@ -19993,15 +20263,39 @@ function Start-ADTMsiProcess
         [Parameter(Mandatory = $false)]
         [System.Management.Automation.SwitchParameter]$IncludeUpdatesAndHotfixes,
 
-        [Parameter(Mandatory = $false)]
+        [Parameter(Mandatory = $false, ParameterSetName = 'FilePath')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'InstalledApplication')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'ProductCode')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_FilePath')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_InstalledApplication')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_ProductCode')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseUnelevatedToken_FilePath')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseUnelevatedToken_InstalledApplication')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseUnelevatedToken_ProductCode')]
         [ValidateNotNullOrEmpty()]
         [System.Int32[]]$SuccessExitCodes,
 
-        [Parameter(Mandatory = $false)]
+        [Parameter(Mandatory = $false, ParameterSetName = 'FilePath')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'InstalledApplication')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'ProductCode')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_FilePath')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_InstalledApplication')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_ProductCode')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseUnelevatedToken_FilePath')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseUnelevatedToken_InstalledApplication')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseUnelevatedToken_ProductCode')]
         [ValidateNotNullOrEmpty()]
         [System.Int32[]]$RebootExitCodes,
 
-        [Parameter(Mandatory = $false)]
+        [Parameter(Mandatory = $false, ParameterSetName = 'FilePath')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'InstalledApplication')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'ProductCode')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_FilePath')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_InstalledApplication')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_ProductCode')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseUnelevatedToken_FilePath')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseUnelevatedToken_InstalledApplication')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseUnelevatedToken_ProductCode')]
         [ValidateNotNullOrEmpty()]
         [System.String[]]$IgnoreExitCodes,
 
@@ -20009,13 +20303,29 @@ function Start-ADTMsiProcess
         [ValidateNotNullOrEmpty()]
         [System.Diagnostics.ProcessPriorityClass]$PriorityClass,
 
-        [Parameter(Mandatory = $false)]
+        [Parameter(Mandatory = $false, ParameterSetName = 'FilePath')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'InstalledApplication')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'ProductCode')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_FilePath')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_InstalledApplication')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_ProductCode')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseUnelevatedToken_FilePath')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseUnelevatedToken_InstalledApplication')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseUnelevatedToken_ProductCode')]
         [System.Management.Automation.SwitchParameter]$ExitOnProcessFailure,
 
         [Parameter(Mandatory = $false)]
         [System.Management.Automation.SwitchParameter]$NoDesktopRefresh,
 
-        [Parameter(Mandatory = $false)]
+        [Parameter(Mandatory = $true, ParameterSetName = 'FilePath_NoWait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'InstalledApplication_NoWait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'ProductCode_NoWait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_FilePath_NoWait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_InstalledApplication_NoWait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_ProductCode_NoWait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'UseUnelevatedToken_FilePath_NoWait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'UseUnelevatedToken_InstalledApplication_NoWait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'UseUnelevatedToken_ProductCode_NoWait')]
         [System.Management.Automation.SwitchParameter]$NoWait,
 
         [Parameter(Mandatory = $false)]
@@ -20099,7 +20409,7 @@ function Start-ADTMsiProcess
                     {
                         for ($i = 0; $i -lt $Transforms.Length; $i++)
                         {
-                            if (& $Script:CommandTable.'Test-Path' -LiteralPath ($fullPath = (& $Script:CommandTable.'Join-Path' -Path (& $Script:CommandTable.'Get-Item' -LiteralPath $msiProduct).DirectoryName -ChildPath $Transforms[$i].Replace('.\', '')).Trim()) -PathType Leaf)
+                            if (& $Script:CommandTable.'Test-Path' -LiteralPath ($fullPath = (& $Script:CommandTable.'Join-Path' -Path (& $Script:CommandTable.'Get-Item' -LiteralPath $msiProduct).DirectoryName -ChildPath $Transforms[$i].Replace('.\', [System.Management.Automation.Language.NullString]::Value)).Trim()) -PathType Leaf)
                             {
                                 $Transforms[$i] = $fullPath
                             }
@@ -20111,7 +20421,7 @@ function Start-ADTMsiProcess
                     {
                         for ($i = 0; $i -lt $Patches.Length; $i++)
                         {
-                            if (& $Script:CommandTable.'Test-Path' -LiteralPath ($fullPath = (& $Script:CommandTable.'Join-Path' -Path (& $Script:CommandTable.'Get-Item' -LiteralPath $msiProduct).DirectoryName -ChildPath $Patches[$i].Replace('.\', '')).Trim()) -PathType Leaf)
+                            if (& $Script:CommandTable.'Test-Path' -LiteralPath ($fullPath = (& $Script:CommandTable.'Join-Path' -Path (& $Script:CommandTable.'Get-Item' -LiteralPath $msiProduct).DirectoryName -ChildPath $Patches[$i].Replace('.\', [System.Management.Automation.Language.NullString]::Value)).Trim()) -PathType Leaf)
                             {
                                 $Patches[$i] = $fullPath
                             }
@@ -20183,19 +20493,22 @@ function Start-ADTMsiProcess
                 # Build the log path to use.
                 $logPath = if ($logFile)
                 {
+                    # Determine whether or not we use the NoAdminRights pathway.
+                    $logPathProperty = ('LogPath', 'LogPathNoAdminRights')[$PSBoundParameters.ContainsKey('RunAsActiveUser')]
+
                     # A defined MSI log path is considered an override.
-                    if (![System.String]::IsNullOrWhiteSpace($adtConfig.MSI.LogPath))
+                    if (![System.String]::IsNullOrWhiteSpace($adtConfig.MSI.$logPathProperty))
                     {
                         # Create the Log directory if it doesn't already exist.
-                        if (!(& $Script:CommandTable.'Test-Path' -LiteralPath $adtConfig.MSI.LogPath -PathType Container))
+                        if (!(& $Script:CommandTable.'Test-Path' -LiteralPath $adtConfig.MSI.$logPathProperty -PathType Container))
                         {
-                            $null = [System.IO.Directory]::CreateDirectory($adtConfig.MSI.LogPath)
+                            $null = [System.IO.Directory]::CreateDirectory($adtConfig.MSI.$logPathProperty)
                         }
 
                         # Build the log file path.
-                        (& $Script:CommandTable.'Join-Path' -Path $adtConfig.MSI.LogPath -ChildPath $logFile).Trim()
+                        (& $Script:CommandTable.'Join-Path' -Path $adtConfig.MSI.$logPathProperty -ChildPath $logFile).Trim()
                     }
-                    elseif ($adtSession)
+                    elseif ($adtSession -and !$PSBoundParameters.ContainsKey('RunAsActiveUser'))
                     {
                         # Get the log directory from the session. This will factor in
                         # whether we're compressing logs, or logging to a subfolder.
@@ -20204,13 +20517,13 @@ function Start-ADTMsiProcess
                     else
                     {
                         # Fall back to the toolkit's LogPath.
-                        if (!(& $Script:CommandTable.'Test-Path' -LiteralPath $adtConfig.Toolkit.LogPath -PathType Container))
+                        if (!(& $Script:CommandTable.'Test-Path' -LiteralPath $adtConfig.Toolkit.$logPathProperty -PathType Container))
                         {
-                            $null = [System.IO.Directory]::CreateDirectory($adtConfig.Toolkit.LogPath)
+                            $null = [System.IO.Directory]::CreateDirectory($adtConfig.Toolkit.$logPathProperty)
                         }
 
                         # Build the log file path.
-                        (& $Script:CommandTable.'Join-Path' -Path $adtConfig.Toolkit.LogPath -ChildPath $logFile).Trim()
+                        (& $Script:CommandTable.'Join-Path' -Path $adtConfig.Toolkit.$logPathProperty -ChildPath $logFile).Trim()
                     }
                 }
 
@@ -20280,6 +20593,10 @@ function Start-ADTMsiProcess
                     if (!(& $Script:CommandTable.'Test-ADTCallerIsAdmin'))
                     {
                         $msiLogFile = $msiLogFile + '_' + (& $Script:CommandTable.'Remove-ADTInvalidFileNameChars' -Name ([System.Environment]::UserName))
+                    }
+                    elseif ($PSBoundParameters.ContainsKey('RunAsActiveUser'))
+                    {
+                        $msiLogFile = $msiLogFile + '_' + (& $Script:CommandTable.'Remove-ADTInvalidFileNameChars' -Name $RunAsActiveUser.UserName)
                     }
 
                     # Append ".log" to the MSI logfile path and enclose in quotes.
@@ -20588,10 +20905,15 @@ function Start-ADTMsiProcessAsUser
     param
     (
         [Parameter(Mandatory = $false)]
+        [ValidateNotNullOrEmpty()]
+        [System.Security.Principal.NTAccount]$Username,
+
+        [Parameter(Mandatory = $false)]
         [ValidateSet('Install', 'Uninstall', 'Patch', 'Repair', 'ActiveSetup')]
         [System.String]$Action = 'Install',
 
         [Parameter(Mandatory = $true, ParameterSetName = 'FilePath', ValueFromPipeline = $true, HelpMessage = 'Please supply the path to the MSI/MSP file to process.')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'FilePath_NoWait', ValueFromPipeline = $true, HelpMessage = 'Please supply the path to the MSI/MSP file to process.')]
         [ValidateScript({
                 if ([System.IO.Path]::GetExtension($_) -notmatch '^\.ms[ip]$')
                 {
@@ -20602,10 +20924,12 @@ function Start-ADTMsiProcessAsUser
         [System.String]$FilePath = [System.Management.Automation.Language.NullString]::Value,
 
         [Parameter(Mandatory = $true, ParameterSetName = 'ProductCode', ValueFromPipeline = $true, HelpMessage = 'Please supply the Product Code to process.')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'ProductCode_NoWait', ValueFromPipeline = $true, HelpMessage = 'Please supply the Product Code to process.')]
         [ValidateNotNullOrEmpty()]
         [System.Guid]$ProductCode,
 
         [Parameter(Mandatory = $true, ParameterSetName = 'InstalledApplication', ValueFromPipeline = $true, HelpMessage = 'Please supply the InstalledApplication object to process.')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'InstalledApplication_NoWait', ValueFromPipeline = $true, HelpMessage = 'Please supply the InstalledApplication object to process.')]
         [ValidateNotNullOrEmpty()]
         [PSADT.Types.InstalledApplication]$InstalledApplication,
 
@@ -20632,10 +20956,6 @@ function Start-ADTMsiProcessAsUser
         [Parameter(Mandatory = $false)]
         [ValidateNotNullOrEmpty()]
         [System.String[]]$Patches,
-
-        [Parameter(Mandatory = $false)]
-        [ValidateNotNullOrEmpty()]
-        [System.Security.Principal.NTAccount]$Username = (& $Script:CommandTable.'Get-ADTClientServerUser' | & $Script:CommandTable.'Select-Object' -ExpandProperty NTAccount),
 
         [Parameter(Mandatory = $false)]
         [System.Management.Automation.SwitchParameter]$UseLinkedAdminToken,
@@ -20680,15 +21000,21 @@ function Start-ADTMsiProcessAsUser
         [Parameter(Mandatory = $false)]
         [System.Management.Automation.SwitchParameter]$IncludeUpdatesAndHotfixes,
 
-        [Parameter(Mandatory = $false)]
+        [Parameter(Mandatory = $false, ParameterSetName = 'FilePath')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'ProductCode')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'InstalledApplication')]
         [ValidateNotNullOrEmpty()]
         [System.Int32[]]$SuccessExitCodes,
 
-        [Parameter(Mandatory = $false)]
+        [Parameter(Mandatory = $false, ParameterSetName = 'FilePath')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'ProductCode')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'InstalledApplication')]
         [ValidateNotNullOrEmpty()]
         [System.Int32[]]$RebootExitCodes,
 
-        [Parameter(Mandatory = $false)]
+        [Parameter(Mandatory = $false, ParameterSetName = 'FilePath')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'ProductCode')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'InstalledApplication')]
         [ValidateNotNullOrEmpty()]
         [System.String[]]$IgnoreExitCodes,
 
@@ -20696,13 +21022,17 @@ function Start-ADTMsiProcessAsUser
         [ValidateNotNullOrEmpty()]
         [System.Diagnostics.ProcessPriorityClass]$PriorityClass,
 
-        [Parameter(Mandatory = $false)]
+        [Parameter(Mandatory = $false, ParameterSetName = 'FilePath')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'ProductCode')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'InstalledApplication')]
         [System.Management.Automation.SwitchParameter]$ExitOnProcessFailure,
 
         [Parameter(Mandatory = $false)]
         [System.Management.Automation.SwitchParameter]$NoDesktopRefresh,
 
-        [Parameter(Mandatory = $false)]
+        [Parameter(Mandatory = $true, ParameterSetName = 'FilePath_NoWait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'ProductCode_NoWait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'InstalledApplication_NoWait')]
         [System.Management.Automation.SwitchParameter]$NoWait,
 
         [Parameter(Mandatory = $false)]
@@ -20711,24 +21041,38 @@ function Start-ADTMsiProcessAsUser
 
     begin
     {
-        # Test whether there's a proper username to proceed with.
-        if (!$Username)
-        {
-            $naerParams = @{
-                Exception = [System.ArgumentNullException]::new('Username', "There is no logged on user to run a new process as.")
-                Category = [System.Management.Automation.ErrorCategory]::InvalidArgument
-                ErrorId = 'NoActiveUserError'
-                TargetObject = $Username
-                RecommendedAction = "Please re-run this command while a user is logged onto the device and try again."
-            }
-            $PSCmdlet.ThrowTerminatingError((& $Script:CommandTable.'New-ADTErrorRecord' @naerParams))
-        }
-        $PSBoundParameters.Username = $Username
         & $Script:CommandTable.'Initialize-ADTFunction' -Cmdlet $PSCmdlet -SessionState $ExecutionContext.SessionState
     }
 
     process
     {
+        # Convert the Username field into a RunAsActiveUser object as required by the subsystem.
+        $gacsuParams = @{}; if ($PSBoundParameters.ContainsKey('Username'))
+        {
+            $gacsuParams.Add('Username', $Username)
+            $gacsuParams.Add('AllowAnyValidSession', $true)
+        }
+        if (!($PSBoundParameters.RunAsActiveUser = & $Script:CommandTable.'Get-ADTClientServerUser' @gacsuParams))
+        {
+            try
+            {
+                $naerParams = @{
+                    Exception = [System.ArgumentNullException]::new("Could not find a valid logged on user session$(if ($PSBoundParameters.ContainsKey('Username')) { " for [$Username]" }).", $null)
+                    Category = [System.Management.Automation.ErrorCategory]::InvalidArgument
+                    ErrorId = 'NoActiveUserError'
+                    TargetObject = $Username
+                    RecommendedAction = "Please re-run this command while a user is logged onto the device and try again."
+                }
+                & $Script:CommandTable.'Write-Error' -ErrorRecord (& $Script:CommandTable.'New-ADTErrorRecord' @naerParams)
+            }
+            catch
+            {
+                & $Script:CommandTable.'Invoke-ADTFunctionErrorHandler' -Cmdlet $PSCmdlet -SessionState $ExecutionContext.SessionState -ErrorRecord $_
+                return
+            }
+        }
+        $null = $PSBoundParameters.Remove('Username')
+
         # Just farm it out to Start-ADTMsiProcess as it can do it all.
         try
         {
@@ -20770,8 +21114,8 @@ function Start-ADTMspProcess
     .PARAMETER AdditionalArgumentList
         Additional parameters.
 
-    .PARAMETER Username
-        A username to invoke the process as. Only supported while running as the SYSTEM account.
+    .PARAMETER RunAsActiveUser
+        A RunAsActiveUser object to invoke the process as.
 
     .PARAMETER UseLinkedAdminToken
         Use a user's linked administrative token while running the process under their context.
@@ -20820,7 +21164,7 @@ function Start-ADTMspProcess
         https://psappdeploytoolkit.com/docs/reference/functions/Start-ADTMspProcess
     #>
 
-    [CmdletBinding()]
+    [CmdletBinding(DefaultParameterSetName = 'None')]
     [OutputType([System.Int32])]
     param
     (
@@ -20838,17 +21182,17 @@ function Start-ADTMspProcess
         [ValidateNotNullOrEmpty()]
         [System.String[]]$AdditionalArgumentList,
 
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser')]
         [ValidateNotNullOrEmpty()]
-        [System.Security.Principal.NTAccount]$Username,
+        [PSADT.Module.RunAsActiveUser]$RunAsActiveUser,
 
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser')]
         [System.Management.Automation.SwitchParameter]$UseLinkedAdminToken,
 
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser')]
         [System.Management.Automation.SwitchParameter]$UseHighestAvailableToken,
 
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser')]
         [System.Management.Automation.SwitchParameter]$InheritEnvironmentVariables,
 
         [Parameter(Mandatory = $true, ParameterSetName = 'UseUnelevatedToken')]
@@ -21004,6 +21348,10 @@ function Start-ADTMspProcessAsUser
     [OutputType([System.Int32])]
     param
     (
+        [Parameter(Mandatory = $false)]
+        [ValidateNotNullOrEmpty()]
+        [System.Security.Principal.NTAccount]$Username,
+
         [Parameter(Mandatory = $true, HelpMessage = 'Please supply the path to the MSP file to process.')]
         [ValidateScript({
                 if ([System.IO.Path]::GetExtension($_) -notmatch '^\.msp$')
@@ -21017,10 +21365,6 @@ function Start-ADTMspProcessAsUser
         [Parameter(Mandatory = $false)]
         [ValidateNotNullOrEmpty()]
         [System.String[]]$AdditionalArgumentList,
-
-        [Parameter(Mandatory = $false)]
-        [ValidateNotNullOrEmpty()]
-        [System.Security.Principal.NTAccount]$Username = (& $Script:CommandTable.'Get-ADTClientServerUser' | & $Script:CommandTable.'Select-Object' -ExpandProperty NTAccount),
 
         [Parameter(Mandatory = $false)]
         [System.Management.Automation.SwitchParameter]$UseLinkedAdminToken,
@@ -21037,24 +21381,38 @@ function Start-ADTMspProcessAsUser
 
     begin
     {
-        # Test whether there's a proper username to proceed with.
-        if (!$Username)
-        {
-            $naerParams = @{
-                Exception = [System.ArgumentNullException]::new('Username', "There is no logged on user to run a new process as.")
-                Category = [System.Management.Automation.ErrorCategory]::InvalidArgument
-                ErrorId = 'NoActiveUserError'
-                TargetObject = $Username
-                RecommendedAction = "Please re-run this command while a user is logged onto the device and try again."
-            }
-            $PSCmdlet.ThrowTerminatingError((& $Script:CommandTable.'New-ADTErrorRecord' @naerParams))
-        }
-        $PSBoundParameters.Username = $Username
         & $Script:CommandTable.'Initialize-ADTFunction' -Cmdlet $PSCmdlet -SessionState $ExecutionContext.SessionState
     }
 
     process
     {
+        # Convert the Username field into a RunAsActiveUser object as required by the subsystem.
+        $gacsuParams = @{}; if ($PSBoundParameters.ContainsKey('Username'))
+        {
+            $gacsuParams.Add('Username', $Username)
+            $gacsuParams.Add('AllowAnyValidSession', $true)
+        }
+        if (!($PSBoundParameters.RunAsActiveUser = & $Script:CommandTable.'Get-ADTClientServerUser' @gacsuParams))
+        {
+            try
+            {
+                $naerParams = @{
+                    Exception = [System.ArgumentNullException]::new("Could not find a valid logged on user session$(if ($PSBoundParameters.ContainsKey('Username')) { " for [$Username]" }).", $null)
+                    Category = [System.Management.Automation.ErrorCategory]::InvalidArgument
+                    ErrorId = 'NoActiveUserError'
+                    TargetObject = $Username
+                    RecommendedAction = "Please re-run this command while a user is logged onto the device and try again."
+                }
+                & $Script:CommandTable.'Write-Error' -ErrorRecord (& $Script:CommandTable.'New-ADTErrorRecord' @naerParams)
+            }
+            catch
+            {
+                & $Script:CommandTable.'Invoke-ADTFunctionErrorHandler' -Cmdlet $PSCmdlet -SessionState $ExecutionContext.SessionState -ErrorRecord $_
+                return
+            }
+        }
+        $null = $PSBoundParameters.Remove('Username')
+
         # Just farm it out to Start-ADTMspProcessAsUser as it can do it all.
         try
         {
@@ -21102,8 +21460,8 @@ function Start-ADTProcess
     .PARAMETER WorkingDirectory
         The working directory used for executing the process. Defaults to DirFiles if there is an active DeploymentSession. The use of UseShellExecute affects this parameter.
 
-    .PARAMETER Username
-        A username to invoke the process as. Only supported while running as the SYSTEM account.
+    .PARAMETER RunAsActiveUser
+        A RunAsActiveUser object to invoke the process as.
 
     .PARAMETER UseLinkedAdminToken
         Use a user's linked administrative token while running the process under their context.
@@ -21218,13 +21576,13 @@ function Start-ADTProcess
         $result = Start-ADTProcess -FilePath "setup.exe" -ArgumentList "-i -f `"$($adtSession.dirFiles)\$($adtSession.LicenseFile)`"" -ErrorAction SilentlyContinue -PassThru
         if ($result.ExitCode -ne 0)
         {
-            Write-ADTLogEntry -Message "Installation was successful." -Severity 0
-        }
-        else
-        {
             Write-ADTLogEntry -Message "Installation failed with exit code [$($result.ExitCode)]." -Severity 3
             Write-ADTLogEntry -Message "Standard Out [$($result.StdOut)]." -Severity 3
             Write-ADTLogEntry -Message "Standard Error [$($result.StdErr)]." -Severity 3
+        }
+        else
+        {
+            Write-ADTLogEntry -Message "Installation was successful." -Severity 0
         }
         ```
 
@@ -21277,50 +21635,50 @@ function Start-ADTProcess
         [ValidateNotNullOrEmpty()]
         [System.String]$WorkingDirectory = [System.Management.Automation.Language.NullString]::Value,
 
-        # Identity: Username (only present in sets where identity is "Username")
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_CreateWindow_Wait')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_CreateWindow_NoWait')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_CreateWindow_Timeout')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_WindowStyle_Wait')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_WindowStyle_NoWait')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_WindowStyle_Timeout')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_CreateNoWindow_Wait')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_CreateNoWindow_NoWait')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_CreateNoWindow_Timeout')]
+        # Identity: RunAsActiveUser (only present in sets where identity is "RunAsActiveUser")
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_CreateWindow_Wait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_CreateWindow_NoWait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_WindowStyle_Wait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_WindowStyle_NoWait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_NoWait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Timeout')]
         [ValidateNotNullOrEmpty()]
-        [System.Security.Principal.NTAccount]$Username,
+        [PSADT.Module.RunAsActiveUser]$RunAsActiveUser,
 
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateWindow_Wait')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateWindow_NoWait')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateWindow_Timeout')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_WindowStyle_Wait')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_WindowStyle_NoWait')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_WindowStyle_Timeout')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateNoWindow_Wait')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateNoWindow_NoWait')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateWindow_NoWait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_WindowStyle_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_WindowStyle_NoWait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_NoWait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Timeout')]
         [System.Management.Automation.SwitchParameter]$UseLinkedAdminToken,
 
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateWindow_Wait')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateWindow_NoWait')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateWindow_Timeout')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_WindowStyle_Wait')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_WindowStyle_NoWait')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_WindowStyle_Timeout')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateNoWindow_Wait')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateNoWindow_NoWait')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateWindow_NoWait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_WindowStyle_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_WindowStyle_NoWait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_NoWait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Timeout')]
         [System.Management.Automation.SwitchParameter]$UseHighestAvailableToken,
 
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateWindow_Wait')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateWindow_NoWait')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateWindow_Timeout')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_WindowStyle_Wait')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_WindowStyle_NoWait')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_WindowStyle_Timeout')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateNoWindow_Wait')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateNoWindow_NoWait')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateWindow_NoWait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_WindowStyle_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_WindowStyle_NoWait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_NoWait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Timeout')]
         [System.Management.Automation.SwitchParameter]$InheritEnvironmentVariables,
 
         [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateWindow_Wait')]
@@ -21365,9 +21723,9 @@ function Start-ADTProcess
         [Parameter(Mandatory = $true, ParameterSetName = 'Default_WindowStyle_Wait')]
         [Parameter(Mandatory = $true, ParameterSetName = 'Default_WindowStyle_NoWait')]
         [Parameter(Mandatory = $true, ParameterSetName = 'Default_WindowStyle_Timeout')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_WindowStyle_Wait')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_WindowStyle_NoWait')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_WindowStyle_Wait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_WindowStyle_NoWait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_WindowStyle_Timeout')]
         [Parameter(Mandatory = $true, ParameterSetName = 'UseShellExecute_WindowStyle_Wait')]
         [Parameter(Mandatory = $true, ParameterSetName = 'UseShellExecute_WindowStyle_NoWait')]
         [Parameter(Mandatory = $true, ParameterSetName = 'UseShellExecute_WindowStyle_Timeout')]
@@ -21378,9 +21736,9 @@ function Start-ADTProcess
         [Parameter(Mandatory = $true, ParameterSetName = 'Default_CreateNoWindow_Wait')]
         [Parameter(Mandatory = $true, ParameterSetName = 'Default_CreateNoWindow_NoWait')]
         [Parameter(Mandatory = $true, ParameterSetName = 'Default_CreateNoWindow_Timeout')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_CreateNoWindow_Wait')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_CreateNoWindow_NoWait')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_NoWait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Timeout')]
         [Parameter(Mandatory = $true, ParameterSetName = 'UseShellExecute_CreateNoWindow_Wait')]
         [Parameter(Mandatory = $true, ParameterSetName = 'UseShellExecute_CreateNoWindow_NoWait')]
         [Parameter(Mandatory = $true, ParameterSetName = 'UseShellExecute_CreateNoWindow_Timeout')]
@@ -21389,9 +21747,9 @@ function Start-ADTProcess
         [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Wait')]
         [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_NoWait')]
         [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Timeout')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateNoWindow_Wait')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateNoWindow_NoWait')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_NoWait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Timeout')]
         [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateNoWindow_Wait')]
         [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateNoWindow_NoWait')]
         [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateNoWindow_Timeout')]
@@ -21401,9 +21759,9 @@ function Start-ADTProcess
         [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Wait')]
         [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_NoWait')]
         [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Timeout')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateNoWindow_Wait')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateNoWindow_NoWait')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_NoWait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Timeout')]
         [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateNoWindow_Wait')]
         [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateNoWindow_NoWait')]
         [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateNoWindow_Timeout')]
@@ -21434,9 +21792,9 @@ function Start-ADTProcess
         [Parameter(Mandatory = $true, ParameterSetName = 'Default_CreateWindow_Timeout')]
         [Parameter(Mandatory = $true, ParameterSetName = 'Default_WindowStyle_Timeout')]
         [Parameter(Mandatory = $true, ParameterSetName = 'Default_CreateNoWindow_Timeout')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_CreateWindow_Timeout')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_WindowStyle_Timeout')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Timeout')]
         [Parameter(Mandatory = $true, ParameterSetName = 'UseShellExecute_CreateWindow_Timeout')]
         [Parameter(Mandatory = $true, ParameterSetName = 'UseShellExecute_WindowStyle_Timeout')]
         [Parameter(Mandatory = $true, ParameterSetName = 'UseShellExecute_CreateNoWindow_Timeout')]
@@ -21452,9 +21810,9 @@ function Start-ADTProcess
         [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateWindow_Timeout')]
         [Parameter(Mandatory = $false, ParameterSetName = 'Default_WindowStyle_Timeout')]
         [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Timeout')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateWindow_Timeout')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_WindowStyle_Timeout')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Timeout')]
         [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateWindow_Timeout')]
         [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_WindowStyle_Timeout')]
         [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateNoWindow_Timeout')]
@@ -21464,23 +21822,74 @@ function Start-ADTProcess
         [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateWindow_Timeout')]
         [Parameter(Mandatory = $false, ParameterSetName = 'Default_WindowStyle_Timeout')]
         [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Timeout')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateWindow_Timeout')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_WindowStyle_Timeout')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'Username_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Timeout')]
         [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateWindow_Timeout')]
         [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_WindowStyle_Timeout')]
         [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateNoWindow_Timeout')]
         [System.Management.Automation.SwitchParameter]$NoTerminateOnTimeout,
 
-        [Parameter(Mandatory = $false)]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_WindowStyle_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_WindowStyle_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_WindowStyle_Wait')]
         [ValidateNotNullOrEmpty()]
         [System.Int32[]]$SuccessExitCodes,
 
-        [Parameter(Mandatory = $false)]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_WindowStyle_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_WindowStyle_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_WindowStyle_Wait')]
         [ValidateNotNullOrEmpty()]
         [System.Int32[]]$RebootExitCodes,
 
-        [Parameter(Mandatory = $false)]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_WindowStyle_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_WindowStyle_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_WindowStyle_Wait')]
         [ValidateNotNullOrEmpty()]
         [SupportsWildcards()]
         [System.String[]]$IgnoreExitCodes,
@@ -21489,16 +21898,33 @@ function Start-ADTProcess
         [ValidateNotNullOrEmpty()]
         [System.Diagnostics.ProcessPriorityClass]$PriorityClass,
 
-        [Parameter(Mandatory = $false)]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_WindowStyle_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_CreateWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'RunAsActiveUser_WindowStyle_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_CreateWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'UseShellExecute_WindowStyle_Wait')]
         [System.Management.Automation.SwitchParameter]$ExitOnProcessFailure,
 
         # Wait Option: NoWait (only in sets where wait is "NoWait")
         [Parameter(Mandatory = $true, ParameterSetName = 'Default_CreateWindow_NoWait')]
         [Parameter(Mandatory = $true, ParameterSetName = 'Default_WindowStyle_NoWait')]
         [Parameter(Mandatory = $true, ParameterSetName = 'Default_CreateNoWindow_NoWait')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_CreateWindow_NoWait')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_WindowStyle_NoWait')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Username_CreateNoWindow_NoWait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_CreateWindow_NoWait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_WindowStyle_NoWait')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'RunAsActiveUser_CreateNoWindow_NoWait')]
         [Parameter(Mandatory = $true, ParameterSetName = 'UseShellExecute_CreateWindow_NoWait')]
         [Parameter(Mandatory = $true, ParameterSetName = 'UseShellExecute_WindowStyle_NoWait')]
         [Parameter(Mandatory = $true, ParameterSetName = 'UseShellExecute_CreateNoWindow_NoWait')]
@@ -21569,7 +21995,8 @@ function Start-ADTProcess
 
     process
     {
-        & $Script:CommandTable.'Write-ADTLogEntry' -Message "Preparing to execute process [$FilePath]$(if (![System.String]::IsNullOrWhiteSpace($Username)) {" for user [$Username]"})..."
+        # Commence the underlying execution process.
+        & $Script:CommandTable.'Write-ADTLogEntry' -Message "Preparing to execute process [$FilePath]$(if ($RunAsActiveUser) {" for user [$($RunAsActiveUser.NTAccount)]"})..."
         if ($PSBoundParameters.ContainsKey('IgnoreExitCodes') -and !$($IgnoreExitCodes).Equals('*'))
         {
             & $Script:CommandTable.'Write-ADTLogEntry' -Message "Please use [-SuccessExitCodes] and/or [-RebootExitCodes] to specify your process's exit codes."
@@ -21656,7 +22083,7 @@ function Start-ADTProcess
                     $FilePath,
                     $ArgumentList,
                     $WorkingDirectory,
-                    $Username,
+                    $RunAsActiveUser,
                     $UseLinkedAdminToken,
                     $UseHighestAvailableToken,
                     $InheritEnvironmentVariables,
@@ -21692,16 +22119,16 @@ function Start-ADTProcess
                 {
                     if ($SecureArgumentList)
                     {
-                        & $Script:CommandTable.'Write-ADTLogEntry' -Message "Executing [`"$FilePath`" (Parameters Hidden)]$(if ($Username) {" for user [$Username]"})..."
+                        & $Script:CommandTable.'Write-ADTLogEntry' -Message "Executing [`"$FilePath`" (Parameters Hidden)]$(if ($RunAsActiveUser) {" for user [$($RunAsActiveUser.NTAccount)]"})..."
                     }
                     else
                     {
-                        & $Script:CommandTable.'Write-ADTLogEntry' -Message "Executing [`"$FilePath`" $(if ($ArgumentList.Length -gt 1) { [PSADT.ProcessManagement.CommandLineUtilities]::ArgumentListToCommandLine($ArgumentList) } else { $ArgumentList[0] })]$(if ($Username) {" for user [$Username]"})..."
+                        & $Script:CommandTable.'Write-ADTLogEntry' -Message "Executing [`"$FilePath`" $(if ($ArgumentList.Length -gt 1) { [PSADT.ProcessManagement.CommandLineUtilities]::ArgumentListToCommandLine($ArgumentList) } else { $ArgumentList[0] })]$(if ($RunAsActiveUser) {" for user [$($RunAsActiveUser.NTAccount)]"})..."
                     }
                 }
                 else
                 {
-                    & $Script:CommandTable.'Write-ADTLogEntry' -Message "Executing [`"$FilePath`"]$(if ($Username) {" for user [$Username]"})..."
+                    & $Script:CommandTable.'Write-ADTLogEntry' -Message "Executing [`"$FilePath`"]$(if ($RunAsActiveUser) {" for user [$($RunAsActiveUser.NTAccount)]"})..."
                 }
 
                 # Start the process.
@@ -21825,7 +22252,7 @@ function Start-ADTProcess
                     {
                         $streamMessage = if ($result.$property)
                         {
-                            if ($result.$property -gt 1)
+                            if ($result.$property.Count -gt 1)
                             {
                                 "`n`n$([System.String]::Join("`n", $result.$property))"
                             }
@@ -22115,7 +22542,7 @@ function Start-ADTProcessAsUser
     (
         [Parameter(Mandatory = $false)]
         [ValidateNotNullOrEmpty()]
-        [System.Security.Principal.NTAccount]$Username = (& $Script:CommandTable.'Get-ADTClientServerUser' | & $Script:CommandTable.'Select-Object' -ExpandProperty NTAccount),
+        [System.Security.Principal.NTAccount]$Username,
 
         [Parameter(Mandatory = $true)]
         [ValidateNotNullOrEmpty()]
@@ -22213,15 +22640,27 @@ function Start-ADTProcessAsUser
         [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Timeout')]
         [System.Management.Automation.SwitchParameter]$NoTerminateOnTimeout,
 
-        [Parameter(Mandatory = $false)]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_WindowStyle_Wait')]
         [ValidateNotNullOrEmpty()]
         [System.Int32[]]$SuccessExitCodes,
 
-        [Parameter(Mandatory = $false)]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_WindowStyle_Wait')]
         [ValidateNotNullOrEmpty()]
         [System.Int32[]]$RebootExitCodes,
 
-        [Parameter(Mandatory = $false)]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_WindowStyle_Wait')]
         [ValidateNotNullOrEmpty()]
         [SupportsWildcards()]
         [System.String[]]$IgnoreExitCodes,
@@ -22230,7 +22669,11 @@ function Start-ADTProcessAsUser
         [ValidateNotNullOrEmpty()]
         [System.Diagnostics.ProcessPriorityClass]$PriorityClass,
 
-        [Parameter(Mandatory = $false)]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateNoWindow_Wait')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_CreateWindow_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_WindowStyle_Timeout')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Default_WindowStyle_Wait')]
         [System.Management.Automation.SwitchParameter]$ExitOnProcessFailure,
 
         # Wait Option: NoWait (only in sets where wait is "NoWait")
@@ -22250,13 +22693,18 @@ function Start-ADTProcessAsUser
 
     process
     {
-        # Test whether there's a proper username to proceed with.
-        if (!$Username)
+        # Convert the Username field into a RunAsActiveUser object as required by the subsystem.
+        $gacsuParams = @{}; if ($PSBoundParameters.ContainsKey('Username'))
+        {
+            $gacsuParams.Add('Username', $Username)
+            $gacsuParams.Add('AllowAnyValidSession', $true)
+        }
+        if (!($PSBoundParameters.RunAsActiveUser = & $Script:CommandTable.'Get-ADTClientServerUser' @gacsuParams))
         {
             try
             {
                 $naerParams = @{
-                    Exception = [System.ArgumentNullException]::new('Username', "There is no logged on user to run a new process as.")
+                    Exception = [System.ArgumentNullException]::new("Could not find a valid logged on user session$(if ($PSBoundParameters.ContainsKey('Username')) { " for [$Username]" }).", $null)
                     Category = [System.Management.Automation.ErrorCategory]::InvalidArgument
                     ErrorId = 'NoActiveUserError'
                     TargetObject = $Username
@@ -22270,7 +22718,7 @@ function Start-ADTProcessAsUser
                 return
             }
         }
-        $PSBoundParameters.Username = $Username
+        $null = $PSBoundParameters.Remove('Username')
 
         # Just farm it out to Start-ADTProcess as it can do it all.
         try
@@ -25117,8 +25565,8 @@ $ADT.Durations.ModuleImport = [System.DateTime]::Now - $ModuleImportStart
 # SIG # Begin signature block
 # MIIuaQYJKoZIhvcNAQcCoIIuWjCCLlYCAQExDzANBglghkgBZQMEAgEFADB5Bgor
 # BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG
-# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCAg7anRZCS+P9aQ
-# WZbCYC5Kg5/cqCa2/E6dQY3j6VmwN6CCE5UwggWQMIIDeKADAgECAhAFmxtXno4h
+# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCCbI4kwVnhUCJMb
+# 0mvspzlS0wCsgBR+dkOIqLCP8bdFT6CCE5UwggWQMIIDeKADAgECAhAFmxtXno4h
 # MuI5B72nd3VcMA0GCSqGSIb3DQEBDAUAMGIxCzAJBgNVBAYTAlVTMRUwEwYDVQQK
 # EwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5jb20xITAfBgNV
 # BAMTGERpZ2lDZXJ0IFRydXN0ZWQgUm9vdCBHNDAeFw0xMzA4MDExMjAwMDBaFw0z
@@ -25228,20 +25676,20 @@ $ADT.Durations.ModuleImport = [System.DateTime]::Now - $ModuleImportStart
 # UlNBNDA5NiBTSEEzODQgMjAyMSBDQTECEAr5W7a+ogyFDpjG+46sCPkwDQYJYIZI
 # AWUDBAIBBQCggYQwGAYKKwYBBAGCNwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0B
 # CQMxDAYKKwYBBAGCNwIBBDAcBgorBgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAv
-# BgkqhkiG9w0BCQQxIgQgvRpcargX8PmsS0PbMs/ZSNSHF/sFHIbm7K1Wlpm8U+sw
-# DQYJKoZIhvcNAQEBBQAEggGADFZvcPhyDQA20nwaqTKedikKFYgQjxh7sVpeWwtV
-# p3hVGAsJOHP61BY7CSnV06GjYlQOAAGqP9ru+hUPevzAQIm3EzoUkG/bhkluLpAM
-# HZk00lneIpAPZvm8IRNPPKRvxjwNDn9MhemahzKZgoelQDhpxVUxDIFlC/lPmN6m
-# gcbpIlMjLqeNBSlwLHzXaMUR9Sd2k78HdMPn3Idp6XZ/jzw8RImi4NbEsRyeMdvi
-# 9rsxdhpIaVuiJFJZemXUsmZEtCJS4FO3nG+zIVdKthyqVtyxKl0LQnxTHJpS7fFo
-# TrupjuW0nwOwKtdfVvZW4t/15F0Q1tPU3fGJKYoPpOxzOkBrSP7U3aSVEbaLDP/v
-# ME/QwxU2ZWfEkjPHet0U+d4oPnwFqjlpoKsclOSK7uzogsK+6DwXIgFpU+3YHDFB
-# 59PZyTTb4fB3dzCAGH5BzhTa79NGrYRDsbWFWYo+kkFCLsPGfWMQWFM47rw6jXDV
-# UlzP29e1gSvzE4HN/gtnwOnvoYIXdzCCF3MGCisGAQQBgjcDAwExghdjMIIXXwYJ
+# BgkqhkiG9w0BCQQxIgQggXPlrDdDeehUqmT8xnX76aMMD6g0cSYKvoavnXNNmVww
+# DQYJKoZIhvcNAQEBBQAEggGAeNB+jzqhavomTkidwoXkvadRE4sOR+WwnNWh4v6c
+# LB9NFQ4T2FPVuu+c+Wd2CVOKmkgWJkDzgIUhj3DsIiYnlD8GZj0Y1+YUlY4Gmjdt
+# 0aZ21XjffPwwhWdZmph4KyOk3J7FATrpjZQq178zbVbiDYLlJ8Wo85MhZfSXNFAQ
+# BvnXcIaoxTzjxw29vsvBdorn6yUs5GVw15OMc48VIhfROjIX7SwKcxk++BuDnRs5
+# Zx+YTzDtJLc0iQnfVubgZNS4K91L3+EBYocjoTqsGp5J4MeDKwQxIjsu5288dySd
+# JG1IHhiYbQD1Jl4uFs74BxZhzhrsjAPyk8qqXJL/iTOOyZInpy60P+zYdQENgzWZ
+# x75hQ0pkUKh+YauF2es5VJQouqK9mgf8iG+D7jq7XvAI4jcGQ/rMhfH8JTjY2+8R
+# TzWjHjGO1oxI2Vdz40ibrdJqcgBNrWoUaMJeCmh+79db0BL/fOwrbwch9LL252cK
+# 6HTYB4FCAYm3gWuAuqPfTEPZoYIXdzCCF3MGCisGAQQBgjcDAwExghdjMIIXXwYJ
 # KoZIhvcNAQcCoIIXUDCCF0wCAQMxDzANBglghkgBZQMEAgEFADB4BgsqhkiG9w0B
-# CRABBKBpBGcwZQIBAQYJYIZIAYb9bAcBMDEwDQYJYIZIAWUDBAIBBQAEIHGxhFEt
-# M8paQYSYB3N5mFoAabt6Q5dBz6OKBnupvuioAhEAmR8/WpUDthJCQUpIj23utBgP
-# MjAyNTA4MjEyMTI1NDZaoIITOjCCBu0wggTVoAMCAQICEAqA7xhLjfEFgtHEdqeV
+# CRABBKBpBGcwZQIBAQYJYIZIAYb9bAcBMDEwDQYJYIZIAWUDBAIBBQAEIOZy5Uzl
+# T6nWmlBI5P27m4sTTgK9Blmw/SbKnmj2uEluAhEAsYFl1yAX3uTlE2Tq/68hRRgP
+# MjAyNTA5MDQxNjU0NTlaoIITOjCCBu0wggTVoAMCAQICEAqA7xhLjfEFgtHEdqeV
 # dGgwDQYJKoZIhvcNAQELBQAwaTELMAkGA1UEBhMCVVMxFzAVBgNVBAoTDkRpZ2lD
 # ZXJ0LCBJbmMuMUEwPwYDVQQDEzhEaWdpQ2VydCBUcnVzdGVkIEc0IFRpbWVTdGFt
 # cGluZyBSU0E0MDk2IFNIQTI1NiAyMDI1IENBMTAeFw0yNTA2MDQwMDAwMDBaFw0z
@@ -25348,19 +25796,19 @@ $ADT.Durations.ModuleImport = [System.DateTime]::Now - $ModuleImportStart
 # Yy4xQTA/BgNVBAMTOERpZ2lDZXJ0IFRydXN0ZWQgRzQgVGltZVN0YW1waW5nIFJT
 # QTQwOTYgU0hBMjU2IDIwMjUgQ0ExAhAKgO8YS43xBYLRxHanlXRoMA0GCWCGSAFl
 # AwQCAQUAoIHRMBoGCSqGSIb3DQEJAzENBgsqhkiG9w0BCRABBDAcBgkqhkiG9w0B
-# CQUxDxcNMjUwODIxMjEyNTQ2WjArBgsqhkiG9w0BCRACDDEcMBowGDAWBBTdYjCs
-# hgotMGvaOLFoeVIwB/tBfjAvBgkqhkiG9w0BCQQxIgQg3JN5vGlWk0ZKnYarL8S5
-# Kjg8Av3wtQDoCKvV5Dpy9wswNwYLKoZIhvcNAQkQAi8xKDAmMCQwIgQgSqA/oizX
-# XITFXJOPgo5na5yuyrM/420mmqM08UYRCjMwDQYJKoZIhvcNAQEBBQAEggIAFe//
-# hu0NCkaBkqfrdBEt2EJvvrZIoD7iJSXpQ32Wb03Hjz5nB2ftcC95tvACSQD8E59F
-# 8MB0HYwEZrQSWs7UfHeJ819/Fnbk+JCo389c+HNZyfYbyFNzrjzwO1s0p5u0vfUL
-# ozTbF/YzSjLQLs98uQg4OT59LsDWZDdo9TRVSwGIxNvemA6Pfj4jaGFELw1MFnI+
-# Nxtl2b9KillB7V1gVmtZIuWWZca+LygyA1M9w/vErMiqbwJ/KSoz/KP9l6eC58tw
-# 1sCG6vdAZSWPmfE4kIPF5VsmLAyaQssmLxT9FyaRwV1EwMGdSdBsduIQ7e2WiRTr
-# uNu0/SdSivSKvS6dNYouuutlXdCZ9ssiINCmDlkLs/HXZBU+07KCEG/plJFouL2U
-# 0KvzBc6GexJiCaH+OUYDSwGxqPFnI0na9vEMvd5sjHsZt1oweSx4nQZgI6Mbjv+v
-# xhONcB0hFGpK4P3Q1D32qba56MRX0ddQWUz2cCAw2EkbPQDvKAIqUIL1OB9TFtAB
-# FJ8Uh0fJzH2jWTjzRLJK2wwQEIG4RoCH1XiODdPv0CpM+5Djoei+iY1g9DuTtEUA
-# xihmEA91ygGsag63t0feWZ9z1PBCNuXkYK9YfJvGMLsRhfKROADUfIBOi7QIVPU1
-# +wUJS2yE8x+MYrdjQbRbu2M68Pq+71LQTDL8yUc=
+# CQUxDxcNMjUwOTA0MTY1NDU5WjArBgsqhkiG9w0BCRACDDEcMBowGDAWBBTdYjCs
+# hgotMGvaOLFoeVIwB/tBfjAvBgkqhkiG9w0BCQQxIgQgtsPFtUA8NM9jH4i8B6JP
+# 0lixgak69LVcOE56nyeDZQQwNwYLKoZIhvcNAQkQAi8xKDAmMCQwIgQgSqA/oizX
+# XITFXJOPgo5na5yuyrM/420mmqM08UYRCjMwDQYJKoZIhvcNAQEBBQAEggIAefxU
+# vpvefaj72vGP29hNWLSalnALFdFOHu1T2tirmhODrEKcCgdlvQH0sXTSTHLl1mzK
+# UPWxR62G3qIC6qMGDB5jYisoXI6FK+Zm8UE1raOO+mUTlT+UmjOsUY7gGDio8NuQ
+# 4X4PYW1FwxnQh5iB3B6uVj8leIm+8QJUoOAgBnurhKmKtaljDaNT07+sjtywb97m
+# vj2vFAwKsaj+xQAzHYF02C3sjwCu4AkoSerhHj27319HXLG0SGM/3PY5Ayi711Ki
+# 2qIzfcOmUAS3c2gptJosJB7Gga3mQdgMtAIE/VNPCkB6pHbMbekf5EGwHSCZqLhR
+# JWGxUZQUd+yQl8wKZniLQw4Rk/L4/OHHY6INEKMwA8ZzP5QQjSKvggEQS+BLrWFW
+# XENY4ve4Li1xoqnriO6JKPNe1TnBRnGOU7yUMigAJOjVte0Tp+8ca7LnOx1XaQNg
+# 827hEkt5gup9vOPScKCt/nHvx+gGNSJtXUUaiNoBCHJeoBBuT34hbgq9RqLqENSC
+# NJCeC7E/cdKEd4dWEtiwVy64bNjc2zYqQEh+VhDniPa3TTuswzV7krb9LT9hcDIf
+# T2/L70AKQwFHbtAs2gDiFocJIwrvYH1GoT6Bnv44UmZ2osfL3Q9ndlmSJYULHVF2
+# 627dNhyIdw9AYNqq7i5Fm/528t3eGeu5bOc6gBc=
 # SIG # End signature block
