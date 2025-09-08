@@ -13,7 +13,6 @@ WingetWingman is built on [PSAppDeployToolkit](https://github.com/PSAppDeployToo
 ## Features
 
 - **Simple Deployment**: Install applications using winget via PSAppDeployToolkit
-- **Smart Auto-Updates**: Scouting task checks for updates every 5 hours, auto-update runs every 4 hours when user is idle
 - **Custom Arguments**: Pass any custom install arguments you need via the `-Custom` parameter
 - **Minimal Configuration**: Just need a winget ID and you're good to go
 - **Enterprise Ready**: Built for Microsoft Intune deployment with comprehensive logging
@@ -174,7 +173,7 @@ HKLM\Software\WingetWingman
 ## Current Version
 
 Based on:
-- **PSAppDeployToolkit**: 4.1.0  
+- **PSAppDeployToolkit**: 4.1.5  
 - **PSAppDeployToolkit.WinGet**: 1.0.5
 
 ## Important Notes
@@ -220,6 +219,7 @@ Special thanks to:
 - [Romanitho](https://github.com/Romanitho) for Winget-AutoUpdate
 
 Made for people who want winget deployments that just work.
+
 
 
 
