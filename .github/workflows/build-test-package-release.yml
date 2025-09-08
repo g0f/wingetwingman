@@ -152,9 +152,10 @@ jobs:
           Write-Host "Generated changelog:"
           Write-Host $changelogContent
           
-          # Escape for GitHub output (handle multiline)
-          $escapedChangelog = $changelogContent -replace "`r`n", "`n" -replace "`r", "`n"
-          echo "changelog=$escapedChangelog" >> $env:GITHUB_OUTPUT
+          $delimiter = "EOF_CHANGELOG_$(Get-Random)"
+          echo "changelog<<$delimiter" >> $env:GITHUB_OUTPUT
+          echo $changelogContent >> $env:GITHUB_OUTPUT
+          echo $delimiter >> $env:GITHUB_OUTPUT
 
   package:
     runs-on: windows-latest
