@@ -8382,8 +8382,8 @@ function Get-ADTShortcut
                     return [PSADT.Types.ShortcutUrl]::new(
                         $Output.Path,
                         $Output.TargetPath,
-                        $Output.IconIndex,
-                        $Output.IconLocation
+                        $Output.IconLocation,
+                        $Output.IconIndex
                     )
                 }
                 else
@@ -8393,8 +8393,8 @@ function Get-ADTShortcut
                     return [PSADT.Types.ShortcutLnk]::new(
                         $Output.Path,
                         $shortcut.TargetPath,
-                        $Output.IconIndex,
                         $Output.IconLocation,
+                        $Output.IconIndex,
                         $shortcut.Arguments,
                         $shortcut.Description,
                         $shortcut.WorkingDirectory,
@@ -14603,8 +14603,7 @@ function Resolve-ADTErrorRecord
             {
                 if ($propName -eq 'TargetObject')
                 {
-                    $osParams = if ($errorObject.$propName -isnot [System.Collections.IDictionary]) { @{ Width = [System.Int32]::MaxValue } } else { @{} }
-                    $logErrorProperties.Add($propName, [PSADT.Utilities.MiscUtilities]::TrimLeadingTrailingLines(($errorObject.$propName | & $Script:CommandTable.'Out-String' @osParams)))
+                    $logErrorProperties.Add($propName, [System.String]::Join("`n", [PSADT.Utilities.MiscUtilities]::TrimLeadingTrailingLines([System.String[]]($errorObject.$propName | & $Script:CommandTable.'Out-String' -Width ([System.Int16]::MaxValue) -Stream))))
                 }
                 else
                 {
@@ -18379,7 +18378,8 @@ function Show-ADTInstallationPrompt
                         {
                             throw
                         }
-                        & $Script:CommandTable.'Write-ADTLogEntry' -Message "The client/server process was terminated unexpectedly. Retrying [$((++$retries))/3] times..."
+                        & $Script:CommandTable.'Write-ADTLogEntry' -Message "The client/server process was terminated unexpectedly.`n$(& $Script:CommandTable.'Resolve-ADTErrorRecord' -ErrorRecord $_)" -Severity Error
+                        & $Script:CommandTable.'Write-ADTLogEntry' -Message "Retrying user client/server process again [$((++$retries))/3] times..."
                         "TerminatedTryAgain"
                     }
                 }
@@ -19500,7 +19500,8 @@ function Show-ADTInstallationWelcome
                 {
                     throw
                 }
-                & $Script:CommandTable.'Write-ADTLogEntry' -Message "The client/server process was terminated unexpectedly. Retrying [$((++(& $Script:CommandTable.'Get-Variable' -Name retries).Value))/3] times..."
+                & $Script:CommandTable.'Write-ADTLogEntry' -Message "The client/server process was terminated unexpectedly.`n$(& $Script:CommandTable.'Resolve-ADTErrorRecord' -ErrorRecord $_)" -Severity Error
+                & $Script:CommandTable.'Write-ADTLogEntry' -Message "Retrying user client/server process again [$((++(& $Script:CommandTable.'Get-Variable' -Name retries).Value))/3] times..."
                 (& $Script:CommandTable.'Get-Variable' -Name initialized).Value = $false
                 return "TerminatedTryAgain"
             }
@@ -25565,8 +25566,8 @@ $ADT.Durations.ModuleImport = [System.DateTime]::Now - $ModuleImportStart
 # SIG # Begin signature block
 # MIIuaQYJKoZIhvcNAQcCoIIuWjCCLlYCAQExDzANBglghkgBZQMEAgEFADB5Bgor
 # BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG
-# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCCbI4kwVnhUCJMb
-# 0mvspzlS0wCsgBR+dkOIqLCP8bdFT6CCE5UwggWQMIIDeKADAgECAhAFmxtXno4h
+# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCDNPQSO1T0MQ9ix
+# fhPJG0saGVNSzzb4zDi0WQynvDN0tqCCE5UwggWQMIIDeKADAgECAhAFmxtXno4h
 # MuI5B72nd3VcMA0GCSqGSIb3DQEBDAUAMGIxCzAJBgNVBAYTAlVTMRUwEwYDVQQK
 # EwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5jb20xITAfBgNV
 # BAMTGERpZ2lDZXJ0IFRydXN0ZWQgUm9vdCBHNDAeFw0xMzA4MDExMjAwMDBaFw0z
@@ -25676,20 +25677,20 @@ $ADT.Durations.ModuleImport = [System.DateTime]::Now - $ModuleImportStart
 # UlNBNDA5NiBTSEEzODQgMjAyMSBDQTECEAr5W7a+ogyFDpjG+46sCPkwDQYJYIZI
 # AWUDBAIBBQCggYQwGAYKKwYBBAGCNwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0B
 # CQMxDAYKKwYBBAGCNwIBBDAcBgorBgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAv
-# BgkqhkiG9w0BCQQxIgQggXPlrDdDeehUqmT8xnX76aMMD6g0cSYKvoavnXNNmVww
-# DQYJKoZIhvcNAQEBBQAEggGAeNB+jzqhavomTkidwoXkvadRE4sOR+WwnNWh4v6c
-# LB9NFQ4T2FPVuu+c+Wd2CVOKmkgWJkDzgIUhj3DsIiYnlD8GZj0Y1+YUlY4Gmjdt
-# 0aZ21XjffPwwhWdZmph4KyOk3J7FATrpjZQq178zbVbiDYLlJ8Wo85MhZfSXNFAQ
-# BvnXcIaoxTzjxw29vsvBdorn6yUs5GVw15OMc48VIhfROjIX7SwKcxk++BuDnRs5
-# Zx+YTzDtJLc0iQnfVubgZNS4K91L3+EBYocjoTqsGp5J4MeDKwQxIjsu5288dySd
-# JG1IHhiYbQD1Jl4uFs74BxZhzhrsjAPyk8qqXJL/iTOOyZInpy60P+zYdQENgzWZ
-# x75hQ0pkUKh+YauF2es5VJQouqK9mgf8iG+D7jq7XvAI4jcGQ/rMhfH8JTjY2+8R
-# TzWjHjGO1oxI2Vdz40ibrdJqcgBNrWoUaMJeCmh+79db0BL/fOwrbwch9LL252cK
-# 6HTYB4FCAYm3gWuAuqPfTEPZoYIXdzCCF3MGCisGAQQBgjcDAwExghdjMIIXXwYJ
+# BgkqhkiG9w0BCQQxIgQgFT2IAlbHF44Ypp6WdRyCa/55wu9Z2/c5t1Ig7SDFgqIw
+# DQYJKoZIhvcNAQEBBQAEggGAQRk6LFpGmJYPJLh8LFTSbqev/Yvsyx+hrUFmniC+
+# b2AZjLEZYCTGm2NtnTLM5hemJOr4OGoNRp/C4oZ7DlJyBl3pD9LIpS2DlZOSocq7
+# lJ/IMjfqTxWfQ/l1wwk7b8ytg8APmu7s2oFCiKKbkdV1+5sAAA0+GF6rE7vdLF8M
+# gNiIvRiMo/cRTuyiCSN+mLUTubqbN1VSaun8YaZ82ZhGXZnD+qDCdtYGU/YPX8t0
+# QNjlTjWZYe32Bo3+2v2DZXnXvnLI4g81DBRccnaUm6FbD7WJjpzycxqKRvzwBOg1
+# avpiY4ZKA/WVwLHH9wQyvq/gyvwVLSpOBWGLRyqknxPOh+cRnsEhjNkx/IuRLpMp
+# tTd3MsoukXSvCZupiL9IOTLJhYuszXiiWU/k7FStDNpzXWgHDjsinSUUKYFcYJ8O
+# 1uHMl2C4MPN1DVZL05Jt5j3rQSe9YGwp+/72LAKOxhSSTp00mcb58WdcbUqwcAbl
+# +Hr2LHwT734GGda5ncbnphUNoYIXdzCCF3MGCisGAQQBgjcDAwExghdjMIIXXwYJ
 # KoZIhvcNAQcCoIIXUDCCF0wCAQMxDzANBglghkgBZQMEAgEFADB4BgsqhkiG9w0B
-# CRABBKBpBGcwZQIBAQYJYIZIAYb9bAcBMDEwDQYJYIZIAWUDBAIBBQAEIOZy5Uzl
-# T6nWmlBI5P27m4sTTgK9Blmw/SbKnmj2uEluAhEAsYFl1yAX3uTlE2Tq/68hRRgP
-# MjAyNTA5MDQxNjU0NTlaoIITOjCCBu0wggTVoAMCAQICEAqA7xhLjfEFgtHEdqeV
+# CRABBKBpBGcwZQIBAQYJYIZIAYb9bAcBMDEwDQYJYIZIAWUDBAIBBQAEICBJNjkO
+# JDjrdoFWXKFGOiQyWiNZ2o1fnmfkviI28KoSAhEAwGR7IWM3ZTN9FeV5hkAgCxgP
+# MjAyNTA5MDcwNDIzMDdaoIITOjCCBu0wggTVoAMCAQICEAqA7xhLjfEFgtHEdqeV
 # dGgwDQYJKoZIhvcNAQELBQAwaTELMAkGA1UEBhMCVVMxFzAVBgNVBAoTDkRpZ2lD
 # ZXJ0LCBJbmMuMUEwPwYDVQQDEzhEaWdpQ2VydCBUcnVzdGVkIEc0IFRpbWVTdGFt
 # cGluZyBSU0E0MDk2IFNIQTI1NiAyMDI1IENBMTAeFw0yNTA2MDQwMDAwMDBaFw0z
@@ -25796,19 +25797,19 @@ $ADT.Durations.ModuleImport = [System.DateTime]::Now - $ModuleImportStart
 # Yy4xQTA/BgNVBAMTOERpZ2lDZXJ0IFRydXN0ZWQgRzQgVGltZVN0YW1waW5nIFJT
 # QTQwOTYgU0hBMjU2IDIwMjUgQ0ExAhAKgO8YS43xBYLRxHanlXRoMA0GCWCGSAFl
 # AwQCAQUAoIHRMBoGCSqGSIb3DQEJAzENBgsqhkiG9w0BCRABBDAcBgkqhkiG9w0B
-# CQUxDxcNMjUwOTA0MTY1NDU5WjArBgsqhkiG9w0BCRACDDEcMBowGDAWBBTdYjCs
-# hgotMGvaOLFoeVIwB/tBfjAvBgkqhkiG9w0BCQQxIgQgtsPFtUA8NM9jH4i8B6JP
-# 0lixgak69LVcOE56nyeDZQQwNwYLKoZIhvcNAQkQAi8xKDAmMCQwIgQgSqA/oizX
-# XITFXJOPgo5na5yuyrM/420mmqM08UYRCjMwDQYJKoZIhvcNAQEBBQAEggIAefxU
-# vpvefaj72vGP29hNWLSalnALFdFOHu1T2tirmhODrEKcCgdlvQH0sXTSTHLl1mzK
-# UPWxR62G3qIC6qMGDB5jYisoXI6FK+Zm8UE1raOO+mUTlT+UmjOsUY7gGDio8NuQ
-# 4X4PYW1FwxnQh5iB3B6uVj8leIm+8QJUoOAgBnurhKmKtaljDaNT07+sjtywb97m
-# vj2vFAwKsaj+xQAzHYF02C3sjwCu4AkoSerhHj27319HXLG0SGM/3PY5Ayi711Ki
-# 2qIzfcOmUAS3c2gptJosJB7Gga3mQdgMtAIE/VNPCkB6pHbMbekf5EGwHSCZqLhR
-# JWGxUZQUd+yQl8wKZniLQw4Rk/L4/OHHY6INEKMwA8ZzP5QQjSKvggEQS+BLrWFW
-# XENY4ve4Li1xoqnriO6JKPNe1TnBRnGOU7yUMigAJOjVte0Tp+8ca7LnOx1XaQNg
-# 827hEkt5gup9vOPScKCt/nHvx+gGNSJtXUUaiNoBCHJeoBBuT34hbgq9RqLqENSC
-# NJCeC7E/cdKEd4dWEtiwVy64bNjc2zYqQEh+VhDniPa3TTuswzV7krb9LT9hcDIf
-# T2/L70AKQwFHbtAs2gDiFocJIwrvYH1GoT6Bnv44UmZ2osfL3Q9ndlmSJYULHVF2
-# 627dNhyIdw9AYNqq7i5Fm/528t3eGeu5bOc6gBc=
+# CQUxDxcNMjUwOTA3MDQyMzA3WjArBgsqhkiG9w0BCRACDDEcMBowGDAWBBTdYjCs
+# hgotMGvaOLFoeVIwB/tBfjAvBgkqhkiG9w0BCQQxIgQgvJob7xpNIS1LHTnaSwbn
+# S7QUQGDlITEN1HDtW2hYI/EwNwYLKoZIhvcNAQkQAi8xKDAmMCQwIgQgSqA/oizX
+# XITFXJOPgo5na5yuyrM/420mmqM08UYRCjMwDQYJKoZIhvcNAQEBBQAEggIAnMM2
+# 5I0NtVK1eRkvR+JHhK/jVQvqjgQUXgx55q0A/CNB66+/7MQDFGbDBZ52ZSyp+nqe
+# g+55Y0qAK1hwYxqEXQyu+/RcrvUVPuVitwI0HmbalR7LCSnHt9XRiSBrhMSAapIH
+# F4coz8QeERtT2Mm8gKm75iFZ9SEd020FKzabKCvwLpG/OvufBX1Jdc38x+A9+QWX
+# atBOpBY8P+Ea2pq3oZtFv9znSzUnf0GlZe8t17lg/l+5vSCaRqAIbv/zSqfFmQYI
+# jWP+6NQ4XBlz7MFwfYv0SnIlHKlH9AuPVFmxcIUFbn/uDIcUnaqyDZjALQGFllmD
+# PfidbXDEbrvu1LDciw2mrM8TBi8BEsL9trJR5V6MYMvvXMKMrdnoRIsjL9KKe/Wr
+# r6DYCx0EFejrHwVVnshx0uHnnksPWrXSyfD3jWqVVdzmSyIB2sxDUoclz+jtDnW3
+# 4L1zrd7cWV5Md1UXvgQPC97ENcY8K1v8u1x1s1Galh9mU2K4++cLkew7HQdC0J+T
+# vIU34m1PL0cCIx4sArUt/NzmAhl5FrAho61lUbeyoR9+vOugQEoT2lLRe2EFKsaL
+# j/U7awAhog2T7xSyOTom0iy0UBMMXantPQNYGDkouNiI6XfB4qv89HqbNY4s8Bk4
+# gbefJ7SUfsCsqWqR+7fwka2MGARURSGljyaFkPM=
 # SIG # End signature block
