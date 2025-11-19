@@ -91,7 +91,10 @@ param
     [System.String]$Version,
 
     [Parameter(Mandatory = $false)]
-    [System.String]$Custom
+    [System.String]$Custom,
+
+    [Parameter(Mandatory = $false)]
+    [System.Management.Automation.SwitchParameter]$BlockSleep
 )
 
 
@@ -137,6 +140,10 @@ function Install-ADTDeployment {
     ## MARK: Pre-Install
     ##================================================
     $adtSession.InstallPhase = "Pre-$($adtSession.DeploymentType)"
+
+    if ($BlockSl) {
+        Block-ADTSleep
+    }  
 
     try {
         Write-ADTLogEntry -Message "Verifying WinGet installation..." -Source $adtSession.DeployAppScriptFriendlyName
@@ -319,6 +326,10 @@ function Install-ADTDeployment {
     }
     else {
         Write-ADTLogEntry -Message "AutoUpdate flag not enabled - $wingetID will not be auto-updated" -Source $adtSession.DeployAppScriptFriendlyName
+    }
+
+    if ($BlockSleep) {
+        Unblock-ADTSleep
     }
 }
 
