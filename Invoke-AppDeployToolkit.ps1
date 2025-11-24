@@ -168,90 +168,97 @@ function Install-ADTDeployment {
         }
     }
 
-    Write-ADTLogEntry -Message "Checking for Winget-AutoUpdate (WAU)..." -Source $adtSession.DeployAppScriptFriendlyName
-    $wauInstallPath = "$envProgramFiles\Winget-AutoUpdate"
+    # Only check/install WAU if AutoUpdate flag is set
+    if ($AutoUpdate) {
+        Write-ADTLogEntry -Message "AutoUpdate flag enabled - checking for Winget-AutoUpdate (WAU)..." -Source $adtSession.DeployAppScriptFriendlyName
+        $wauInstallPath = "$envProgramFiles\Winget-AutoUpdate"
 
-    $wauInstalled = $false
-    $wauNeedsUpdate = $false
+        $wauInstalled = $false
+        $wauNeedsUpdate = $false
 
-    try {
-        $installedWAU = Get-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -ErrorAction SilentlyContinue
-        if ($installedWAU) {
-            Write-ADTLogEntry -Message "Found existing WAU installation: Version $($installedWAU.Version)" -Source $adtSession.DeployAppScriptFriendlyName
-            $wauInstalled = $true
+        try {
+            $installedWAU = Get-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -ErrorAction SilentlyContinue
+            if ($installedWAU) {
+                Write-ADTLogEntry -Message "Found existing WAU installation: Version $($installedWAU.Version)" -Source $adtSession.DeployAppScriptFriendlyName
+                $wauInstalled = $true
 			
-            try {
-                $latestWAU = Find-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -ErrorAction SilentlyContinue
-                if ($latestWAU) {
-                    $installedClean = $installedWAU.Version.Trim() -replace '^[><=\s]+', ''
-                    $latestClean = $latestWAU.Version.Trim() -replace '^[><=\s]+', ''
+                try {
+                    $latestWAU = Find-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -ErrorAction SilentlyContinue
+                    if ($latestWAU) {
+                        $installedClean = $installedWAU.Version.Trim() -replace '^[><=\s]+', ''
+                        $latestClean = $latestWAU.Version.Trim() -replace '^[><=\s]+', ''
 				
-                    Write-ADTLogEntry -Message "Version comparison: Installed='$installedClean' vs Latest='$latestClean'" -Source $adtSession.DeployAppScriptFriendlyName
+                        Write-ADTLogEntry -Message "Version comparison: Installed='$installedClean' vs Latest='$latestClean'" -Source $adtSession.DeployAppScriptFriendlyName
 				
-                    if ($installedClean -ne $latestClean) {
-                        Write-ADTLogEntry -Message "WAU update available: $($installedWAU.Version) -> $($latestWAU.Version)" -Source $adtSession.DeployAppScriptFriendlyName
-                        $wauNeedsUpdate = $true
+                        if ($installedClean -ne $latestClean) {
+                            Write-ADTLogEntry -Message "WAU update available: $($installedWAU.Version) -> $($latestWAU.Version)" -Source $adtSession.DeployAppScriptFriendlyName
+                            $wauNeedsUpdate = $true
+                        }
+                        else {
+                            Write-ADTLogEntry -Message "WAU is up to date (Installed: $($installedWAU.Version), Latest: $($latestWAU.Version))" -Source $adtSession.DeployAppScriptFriendlyName
+                        }
                     }
                     else {
-                        Write-ADTLogEntry -Message "WAU is up to date (Installed: $($installedWAU.Version), Latest: $($latestWAU.Version))" -Source $adtSession.DeployAppScriptFriendlyName
+                        Write-ADTLogEntry -Message "Could not find WAU in WinGet catalog for version comparison" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
                     }
                 }
-                else {
-                    Write-ADTLogEntry -Message "Could not find WAU in WinGet catalog for version comparison" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
+                catch {
+                    Write-ADTLogEntry -Message "Could not check for WAU updates: $($_.Exception.Message)" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
                 }
             }
-            catch {
-                Write-ADTLogEntry -Message "Could not check for WAU updates: $($_.Exception.Message)" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
-            }
-        }
-        else {
-            Write-ADTLogEntry -Message "WAU not found - will install" -Source $adtSession.DeployAppScriptFriendlyName
-        }
-    }
-    catch {
-        Write-ADTLogEntry -Message "Error checking WAU installation status: $($_.Exception.Message)" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
-    }
-
-    if (-not $wauInstalled -or $wauNeedsUpdate) {
-        $action = if ($wauInstalled) { "Updating" } else { "Installing" }
-        Write-ADTLogEntry -Message "$action Winget-AutoUpdate to $wauInstallPath..." -Source $adtSession.DeployAppScriptFriendlyName
-		
-        try {
-            if ($wauInstalled) {
-                Update-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -Mode Silent -Force -ErrorAction Stop
-                Write-ADTLogEntry -Message "Successfully updated WAU" -Source $adtSession.DeployAppScriptFriendlyName
-            }
             else {
-                Install-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -Mode Silent -Force -ErrorAction Stop
-                Write-ADTLogEntry -Message "Successfully installed WAU to default location" -Source $adtSession.DeployAppScriptFriendlyName
-            }
-			
-            Write-ADTLogEntry -Message "Configuring WAU settings: Notifications=None, UpdateInterval=Weekly" -Source $adtSession.DeployAppScriptFriendlyName
-            $wauRegistryPath = "HKLM:\SOFTWARE\Romanitho\Winget-AutoUpdate"
-			
-            Set-ADTRegistryKey -Key $wauRegistryPath -Name "WAU_NotificationLevel" -Value "None" -Type String
-            Set-ADTRegistryKey -Key $wauRegistryPath -Name "WAU_UpdatesInterval" -Value "Weekly" -Type String
-            Set-ADTRegistryKey -Key $wauRegistryPath -Name "WAU_UseWhiteList" -Value "1" -Type String
-			
-            Write-ADTLogEntry -Message "WAU configuration completed" -Source $adtSession.DeployAppScriptFriendlyName
-			
-            Start-Sleep -Seconds 5
-            $verifyWAU = Get-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -ErrorAction SilentlyContinue
-            if ($verifyWAU) {
-                Write-ADTLogEntry -Message "WAU installation verified: Version $($verifyWAU.Version)" -Source $adtSession.DeployAppScriptFriendlyName
-            }
-            else {
-                Write-ADTLogEntry -Message "Warning: Could not verify WAU installation via WinGet" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
+                Write-ADTLogEntry -Message "WAU not found - will install" -Source $adtSession.DeployAppScriptFriendlyName
             }
         }
         catch {
-            Write-ADTLogEntry -Message "Failed to $($action.ToLower()) WAU: $($_.Exception.Message)" -Severity 3 -Source $adtSession.DeployAppScriptFriendlyName
-            throw "WAU installation/update failed. Cannot continue with deployment."
+            Write-ADTLogEntry -Message "Error checking WAU installation status: $($_.Exception.Message)" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
+        }
+
+        if (-not $wauInstalled -or $wauNeedsUpdate) {
+            $action = if ($wauInstalled) { "Updating" } else { "Installing" }
+            Write-ADTLogEntry -Message "$action Winget-AutoUpdate to $wauInstallPath..." -Source $adtSession.DeployAppScriptFriendlyName
+		
+            try {
+                if ($wauInstalled) {
+                    Update-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -Mode Silent -Force -ErrorAction Stop
+                    Write-ADTLogEntry -Message "Successfully updated WAU" -Source $adtSession.DeployAppScriptFriendlyName
+                }
+                else {
+                    Install-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -Mode Silent -Force -ErrorAction Stop
+                    Write-ADTLogEntry -Message "Successfully installed WAU to default location" -Source $adtSession.DeployAppScriptFriendlyName
+                }
+			
+                Write-ADTLogEntry -Message "Configuring WAU settings: Notifications=None, UpdateInterval=Weekly" -Source $adtSession.DeployAppScriptFriendlyName
+                $wauRegistryPath = "HKLM:\SOFTWARE\Romanitho\Winget-AutoUpdate"
+			
+                Set-ADTRegistryKey -Key $wauRegistryPath -Name "WAU_NotificationLevel" -Value "None" -Type String
+                Set-ADTRegistryKey -Key $wauRegistryPath -Name "WAU_UpdatesInterval" -Value "Weekly" -Type String
+                Set-ADTRegistryKey -Key $wauRegistryPath -Name "WAU_UseWhiteList" -Value "1" -Type String
+			
+                Write-ADTLogEntry -Message "WAU configuration completed" -Source $adtSession.DeployAppScriptFriendlyName
+			
+                Start-Sleep -Seconds 5
+                $verifyWAU = Get-ADTWinGetPackage -Id "Romanitho.Winget-AutoUpdate" -ErrorAction SilentlyContinue
+                if ($verifyWAU) {
+                    Write-ADTLogEntry -Message "WAU installation verified: Version $($verifyWAU.Version)" -Source $adtSession.DeployAppScriptFriendlyName
+                }
+                else {
+                    Write-ADTLogEntry -Message "Warning: Could not verify WAU installation via WinGet" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
+                }
+            }
+            catch {
+                Write-ADTLogEntry -Message "Failed to $($action.ToLower()) WAU: $($_.Exception.Message)" -Severity 3 -Source $adtSession.DeployAppScriptFriendlyName
+                throw "WAU installation/update failed. Cannot continue with deployment."
+            }
+        }
+        else {
+            Write-ADTLogEntry -Message "WAU is already installed and up to date" -Source $adtSession.DeployAppScriptFriendlyName
         }
     }
     else {
-        Write-ADTLogEntry -Message "WAU is already installed and up to date" -Source $adtSession.DeployAppScriptFriendlyName
+        Write-ADTLogEntry -Message "AutoUpdate flag not set - skipping WAU installation/check" -Source $adtSession.DeployAppScriptFriendlyName
     }
+    
     ##================================================
     ## MARK: Install
     ##================================================
@@ -259,8 +266,9 @@ function Install-ADTDeployment {
 
     # Build the install parameters
     $installParams = @{
-        Id    = $wingetID
-        Force = $true
+        Id     = $wingetID
+        Source = 'winget'  # ADDED: Force winget source for latest version
+        Force  = $true
     }
 
     if ($Version) {
@@ -577,6 +585,7 @@ catch {
 
     Close-ADTSession -ExitCode 60001
 }
+
 
 
 
