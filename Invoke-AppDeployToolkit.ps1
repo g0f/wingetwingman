@@ -141,7 +141,7 @@ function Install-ADTDeployment {
     ##================================================
     $adtSession.InstallPhase = "Pre-$($adtSession.DeploymentType)"
 
-    if ($BlockSl) {
+    if ($BlockSleep) {
         Block-ADTSleep
     }  
 
@@ -577,5 +577,6 @@ catch {
 
     Close-ADTSession -ExitCode 60001
 }
+
 
 
