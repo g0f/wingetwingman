@@ -219,7 +219,7 @@ jobs:
           New-Item -Path $stagingDir -ItemType Directory -Force
           
           # Define folders and files to include (exclude .github, README, prep-tool, etc.)
-          $foldersToInclude = @('Assets', 'Config', 'Files', 'PSAppDeployToolkit', 'PSAppDeployToolkit.Extensions', 'PSAppDeployToolkit.WinGet', 'Strings', 'SupportFiles')
+          $foldersToInclude = @('Assets', 'Config', 'Files', 'PSAppDeployToolkit', 'PSAppDeployToolkit.Extensions', 'PSAppDeployToolkit.Sleep', 'PSAppDeployToolkit.WinGet', 'Strings', 'SupportFiles')
           $filesToInclude = @('Invoke-AppDeployToolkit.exe', 'Invoke-AppDeployToolkit.ps1')
           
           # Copy folders
