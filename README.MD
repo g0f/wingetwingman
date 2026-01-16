@@ -24,11 +24,12 @@ Built on [PSAppDeployToolkit](https://github.com/PSAppDeployToolkit/PSAppDeployT
 | `-wingetID` | Winget package ID (required) | `"7zip.7zip"` |
 | `-DeploymentType` | Install, Uninstall, or Repair | `Install` |
 | `-DeployMode` | Silent, Interactive, or NonInteractive | `Silent` |
-| `-AutoUpdate` | Enable automatic updates via WAU | x |
-| `-BlockSleep` | Prevent sleep during installation | x |
+| `-AutoUpdate` | Enable automatic updates via WAU | - |
+| `-BlockSleep` | Prevent sleep during installation | - |
 | `-Version` | Install specific version | `"1.2.3"` |
 | `-Custom` | Custom install arguments | `"\"arg1 arg2\""` |
-| `-AllowHashMismatch` | Bypass SHA256 hash verification | x |
+| `-AllowHashMismatch` | Bypass SHA256 hash verification | - |
+| `-EnableInstallerLogging` | Save WinGet installer logs for troubleshooting | - |
 
 ## Example Commands
 
@@ -64,6 +65,7 @@ Invoke-AppDeployToolkit.exe -wingetID "7zip.7zip" -DeploymentType Uninstall -Dep
 - Custom argument support
 - Version pinning
 - Sleep prevention during long installs
+- Optional installer logging for troubleshooting
 
 ## Notes
 
@@ -74,7 +76,9 @@ Invoke-AppDeployToolkit.exe -wingetID "7zip.7zip" -DeploymentType Uninstall -Dep
 
 ## Troubleshooting
 
-Check logs at: `C:\Windows\Logs\Software`
+Check PSADT logs at: `C:\Windows\Logs\Software`
+
+For detailed installer logs, add `-EnableInstallerLogging` to your command. Logs will be saved to the same directory.
 
 Common issues and full documentation: [winget.enbom.eu](https://winget.enbom.eu)
 
