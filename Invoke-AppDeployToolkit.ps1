@@ -172,6 +172,17 @@ function Install-ADTDeployment {
         }
     }
 
+    # Update WinGet source index - SYSTEM context has a separate, often stale source cache
+    try {
+        Write-ADTLogEntry -Message "Updating WinGet source index..." -Source $adtSession.DeployAppScriptFriendlyName
+        $wingetExe = (Get-Item "$env:ProgramFiles\WindowsApps\Microsoft.DesktopAppInstaller_*_*__8wekyb3d8bbwe\winget.exe" | Sort-Object { [version]($_.VersionInfo.FileVersionRaw) })[-1].FullName
+        & $wingetExe source update --name winget 2>$null | Out-Null
+        Write-ADTLogEntry -Message "WinGet source index updated" -Source $adtSession.DeployAppScriptFriendlyName
+    }
+    catch {
+        Write-ADTLogEntry -Message "Could not update WinGet source index: $($_.Exception.Message)" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
+    }
+
     # Only check/install WAU if AutoUpdate flag is set
     if ($AutoUpdate) {
         Write-ADTLogEntry -Message "AutoUpdate flag enabled - checking for Winget-AutoUpdate (WAU)..." -Source $adtSession.DeployAppScriptFriendlyName
@@ -194,7 +205,8 @@ function Install-ADTDeployment {
 				
                         Write-ADTLogEntry -Message "Version comparison: Installed='$installedClean' vs Latest='$latestClean'" -Source $adtSession.DeployAppScriptFriendlyName
 				
-                        if ($installedClean -ne $latestClean) {
+                        $versionsDiffer = try { [version]$installedClean -ne [version]$latestClean } catch { $installedClean -ne $latestClean }
+                        if ($versionsDiffer) {
                             Write-ADTLogEntry -Message "WAU update available: $($installedWAU.Version) -> $($latestWAU.Version)" -Source $adtSession.DeployAppScriptFriendlyName
                             $wauNeedsUpdate = $true
                         }
@@ -667,7 +679,5 @@ catch {
 
     Close-ADTSession -ExitCode 60001
 }
-
-
 
 
