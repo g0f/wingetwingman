@@ -106,6 +106,16 @@ param
 ## MARK: Variables
 ##================================================
 
+$appScriptVersion = 'PLACEHOLDER_VERSION'
+if ($appScriptVersion -eq 'PLACEHOLDER_VERSION') {
+    $appScriptVersion = '4.1.8'
+}
+
+$appScriptDate = 'PLACEHOLDER_DATE'
+if ($appScriptDate -eq 'PLACEHOLDER_DATE') {
+    $appScriptDate = [System.IO.File]::GetLastWriteTime($PSCommandPath)
+}
+
 # Zero-Config MSI support is provided when "AppName" is null or empty.
 # By setting the "AppName" property, Zero-Config MSI will be disabled.
 $adtSession = @{
@@ -119,8 +129,8 @@ $adtSession = @{
     AppSuccessExitCodes         = @(0)
     AppRebootExitCodes          = @(1641, 3010)
     AppProcessesToClose         = @()  # Example: @('excel', @{ Name = 'winword'; Description = 'Microsoft Word' })
-    AppScriptVersion            = 'PLACEHOLDER_VERSION'
-    AppScriptDate               = 'PLACEHOLDER_DATE'
+    AppScriptVersion            = $appScriptVersion
+    AppScriptDate               = $appScriptDate
     AppScriptAuthor             = 'Simon Enbom'
     RequireAdmin                = $true
 
@@ -134,7 +144,7 @@ $adtSession = @{
     DeployAppScriptVersion      = '4.1.8'
 }
 
-$Script:WingetWingmanLegacyLogDirectory = Join-Path $envWinDir 'Logs\Software'
+$Script:WingetWingmanLegacyLogDirectory = $null
 $Script:WingetWingmanPrimaryLogPath = $null
 $Script:WingetWingmanLegacyLogPath = $null
 
@@ -427,6 +437,42 @@ function Sync-WingetWingmanWAUWhitelistEntry {
     return @(Set-WingetWingmanWAUWhitelistEntries -Path $Path -Entries $entries)
 }
 
+function Get-WingetWingmanWinGetPath {
+    [CmdletBinding()]
+    [OutputType([System.IO.FileInfo])]
+    param ()
+
+    $runningAsSystem = [System.Security.Principal.WindowsIdentity]::GetCurrent().IsSystem
+    $wingetPath = $null
+
+    if ($runningAsSystem) {
+        $wingetPath = Get-ChildItem -Path "$([System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::ProgramFiles))\WindowsApps\Microsoft.DesktopAppInstaller*\winget.exe" -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+    }
+    elseif ($wingetCommand = Get-Command -Name winget.exe -ErrorAction SilentlyContinue) {
+        $wingetPath = $wingetCommand.Source
+    }
+    else {
+        $appxInstallLocation = Get-AppxPackage -Name Microsoft.DesktopAppInstaller -ErrorAction SilentlyContinue |
+            Sort-Object Version -Descending |
+            Select-Object -ExpandProperty InstallLocation -First 1
+
+        if ($appxInstallLocation) {
+            $candidatePath = Join-Path $appxInstallLocation 'winget.exe'
+            if ([System.IO.File]::Exists($candidatePath)) {
+                $wingetPath = $candidatePath
+            }
+        }
+    }
+
+    if (-not $wingetPath) {
+        throw 'Failed to find a valid path to winget.exe on this system.'
+    }
+
+    return [System.IO.FileInfo]$wingetPath
+}
+
 function Invoke-WingetWingmanSourceRefresh {
     [CmdletBinding()]
     param
@@ -441,8 +487,7 @@ function Invoke-WingetWingmanSourceRefresh {
         [System.Int32]$RetryDelaySeconds = 5
     )
 
-    $wingetPath = Get-ADTWinGetPath -ErrorAction Stop
-    $wingetFile = Get-Item -LiteralPath $wingetPath.FullName -ErrorAction Stop
+    $wingetFile = Get-WingetWingmanWinGetPath
     $lastOutput = $null
     $lastExitCode = $null
     $attempt = 0
@@ -454,8 +499,15 @@ function Invoke-WingetWingmanSourceRefresh {
         try {
             $lastOutput = & $wingetFile.FullName source update --name $SourceName --disable-interactivity 2>&1
             $lastExitCode = $LASTEXITCODE
+            $outputSummary = (@($lastOutput) -join ' ').Trim()
+            $refreshSucceeded = ($lastExitCode -eq 0)
 
-            if ($lastExitCode -eq 0) {
+            if (-not $refreshSucceeded -and [System.String]::IsNullOrWhiteSpace([string]$lastExitCode) -and $outputSummary -match '(^|\s)Done$') {
+                $refreshSucceeded = $true
+                $lastExitCode = 0
+            }
+
+            if ($refreshSucceeded) {
                 Write-ADTLogEntry -Message "WinGet source refresh succeeded for '$SourceName' on attempt $attempt." -Source $adtSession.DeployAppScriptFriendlyName
                 return [PSCustomObject]@{
                     Success    = $true
@@ -466,7 +518,6 @@ function Invoke-WingetWingmanSourceRefresh {
                 }
             }
 
-            $outputSummary = @($lastOutput) -join ' '
             if ($outputSummary.Length -gt 400) {
                 $outputSummary = $outputSummary.Substring(0, 400)
             }
@@ -721,7 +772,7 @@ function Install-ADTDeployment {
         Write-ADTLogEntry -Message "Updated detection metadata for $wingetID$(if ($detectedVersion) { ": Version $detectedVersion" })" -Source $adtSession.DeployAppScriptFriendlyName
     }
     catch {
-        Write-ADTLogEntry -Message "Could not update detection metadata for $wingetID: $($_.Exception.Message)" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
+        Write-ADTLogEntry -Message ('Could not update detection metadata for {0}: {1}' -f $wingetID, $_.Exception.Message) -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
     }
 
     if ($AutoUpdate) {
@@ -1030,7 +1081,8 @@ try {
     # Open a new deployment session, replacing $adtSession with a DeploymentSession.
     $iadtParams = Get-ADTBoundParametersAndDefaultValues -Invocation $MyInvocation
     $adtSession = Remove-ADTHashtableNullOrEmptyValues -Hashtable $adtSession
-    $adtSession = Open-ADTSession @adtSession @iadtParams -PassThru
+    $adtSession = Open-ADTSession @adtSession @iadtParams -SessionState $ExecutionContext.SessionState -PassThru
+    $Script:WingetWingmanLegacyLogDirectory = Join-Path $envWinDir 'Logs\Software'
     $Script:WingetWingmanPrimaryLogPath = Resolve-WingetWingmanSessionLogPath -Session $adtSession
 
     if (-not [System.String]::IsNullOrWhiteSpace($Script:WingetWingmanPrimaryLogPath)) {

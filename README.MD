@@ -89,12 +89,6 @@ Current detection behavior:
 - if you do use `-Version`, detection requires that exact version
 - the script is written for Intune custom detection rules
 
-For Intune, keep these settings in mind:
-
-- run the detection script in 64-bit PowerShell on 64-bit devices
-- the script must return `0` and write to STDOUT when the app is installed
-- do not write to STDERR on success, or Intune can treat detection as failed
-
 ## AutoUpdate
 
 If you use `-AutoUpdate`, WingetWingman will install or update [Winget-AutoUpdate](https://github.com/Romanitho/Winget-AutoUpdate) if needed, then add the package to the WAU whitelist.
@@ -104,7 +98,7 @@ That whitelist is now rewritten as a full set instead of appended blindly, which
 ## Real-world Intune notes
 
 - this project is aimed at Intune Win32 deployments running in SYSTEM context. That works in the field, but WinGet in SYSTEM context is still a rough edge and not something Microsoft treats as a clean, first-class CLI scenario
-- keep installs silent unless you are testing a specific package problem
+- keep installs silent unless you are testing a specific package problem. Some packages do not work with silent uninstalls. Test before you roll it to all users.
 - treat `-AllowHashMismatch` as a last resort, not a normal setting
 - custom installer arguments work, but quote them carefully because Intune launches through CMD
 - source refresh can still fail if the SYSTEM WinGet cache is stale or the source is having a bad day. The wrapper now logs that more clearly
@@ -120,7 +114,7 @@ Start here:
 
 If you need installer-level detail, add `-EnableInstallerLogging` to the command. Those logs are saved with the PSADT logs.
 
-WingetWingman now writes its PSADT logs to the Intune Management Extension log folder so they are easier to pick up when you use Intune diagnostics.
+WingetWingman writes its PSADT logs to the Intune Management Extension log folder so they are easier to pick up when you use Intune diagnostics.
 
 At the end of each run, WingetWingman also mirrors the PSADT log to `C:\Windows\Logs\Software` for anyone who still expects the old location.
 
