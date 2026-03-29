@@ -134,6 +134,363 @@ $adtSession = @{
     DeployAppScriptVersion      = '4.1.8'
 }
 
+$Script:WingetWingmanLegacyLogDirectory = Join-Path $envWinDir 'Logs\Software'
+$Script:WingetWingmanPrimaryLogPath = $null
+$Script:WingetWingmanLegacyLogPath = $null
+
+function Resolve-WingetWingmanSessionLogPath {
+    [CmdletBinding()]
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [System.Object]$Session
+    )
+
+    if ([System.String]::IsNullOrWhiteSpace($Session.LogPath)) {
+        return $null
+    }
+
+    $candidateLogNames = @()
+
+    if ($Session.PSObject.Properties.Match('LogName').Count -gt 0 -and -not [System.String]::IsNullOrWhiteSpace($Session.LogName)) {
+        $candidateLogNames += $Session.LogName.Trim()
+    }
+
+    if ($Session.PSObject.Properties.Match('InstallName').Count -gt 0 -and -not [System.String]::IsNullOrWhiteSpace($Session.InstallName)) {
+        $candidateLogNames += "$($Session.InstallName.Trim()).log"
+    }
+
+    if ($Session.PSObject.Properties.Match('DeployAppScriptFriendlyName').Count -gt 0 -and -not [System.String]::IsNullOrWhiteSpace($Session.DeployAppScriptFriendlyName)) {
+        $candidateLogNames += "$( [System.IO.Path]::GetFileNameWithoutExtension($Session.DeployAppScriptFriendlyName.Trim()) ).log"
+    }
+
+    foreach ($candidateLogName in ($candidateLogNames | Where-Object { $_ } | Sort-Object -Unique)) {
+        $candidatePath = Join-Path $Session.LogPath $candidateLogName
+        if (Test-Path -LiteralPath $candidatePath) {
+            return $candidatePath
+        }
+    }
+
+    return $null
+}
+
+function Copy-WingetWingmanLegacyLog {
+    [CmdletBinding()]
+    param
+    (
+    )
+
+    try {
+        if ([System.String]::IsNullOrWhiteSpace($Script:WingetWingmanPrimaryLogPath) -or [System.String]::IsNullOrWhiteSpace($Script:WingetWingmanLegacyLogPath)) {
+            return
+        }
+
+        if (-not (Test-Path -LiteralPath $Script:WingetWingmanPrimaryLogPath)) {
+            return
+        }
+
+        $legacyDirectory = Split-Path -Path $Script:WingetWingmanLegacyLogPath -Parent
+        if (-not (Test-Path -LiteralPath $legacyDirectory)) {
+            New-Item -Path $legacyDirectory -ItemType Directory -Force | Out-Null
+        }
+
+        Copy-Item -LiteralPath $Script:WingetWingmanPrimaryLogPath -Destination $Script:WingetWingmanLegacyLogPath -Force
+    }
+    catch {
+    }
+}
+
+function Get-WingetWingmanInstalledPackageEvidence {
+    [CmdletBinding()]
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [System.String]$PackageId,
+
+        [Parameter(Mandatory = $false)]
+        [System.String]$PackageName,
+
+        [Parameter(Mandatory = $false)]
+        [System.String]$PackageVersion
+    )
+
+    $idMatches = @()
+    $nameMatches = @()
+    $idQuerySucceeded = $false
+    $nameQuerySucceeded = [System.String]::IsNullOrWhiteSpace($PackageName)
+    $queryErrors = @()
+
+    try {
+        $idMatches = @(Get-ADTWinGetPackage -Id $PackageId -ErrorAction Stop)
+        $idQuerySucceeded = $true
+    }
+    catch {
+        $queryErrors += "ID query failed: $($_.Exception.Message)"
+    }
+
+    if (-not [System.String]::IsNullOrWhiteSpace($PackageName)) {
+        try {
+            $nameMatches = @(Get-ADTWinGetPackage -Name $PackageName -ErrorAction Stop | Where-Object {
+                    $_.Name -eq $PackageName -and (
+                        [System.String]::IsNullOrWhiteSpace($PackageVersion) -or $_.Version -eq $PackageVersion
+                    ) -and $_.Id -ne $PackageId
+                })
+            $nameQuerySucceeded = $true
+        }
+        catch {
+            $queryErrors += "Name query failed: $($_.Exception.Message)"
+        }
+    }
+
+    $allMatches = @($idMatches + $nameMatches)
+
+    return [PSCustomObject]@{
+        Installed      = $allMatches.Count -gt 0
+        ById           = $idMatches.Count -gt 0
+        ByName         = $nameMatches.Count -gt 0
+        QuerySucceeded = $idQuerySucceeded -and $nameQuerySucceeded
+        QueryErrors    = $queryErrors
+        Matches        = $allMatches
+    }
+}
+
+function Wait-WingetWingmanPackageAbsent {
+    [CmdletBinding()]
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [System.String]$PackageId,
+
+        [Parameter(Mandatory = $false)]
+        [System.String]$PackageName,
+
+        [Parameter(Mandatory = $false)]
+        [System.String]$PackageVersion,
+
+        [Parameter(Mandatory = $false)]
+        [System.Int32]$TimeoutSeconds = 300,
+
+        [Parameter(Mandatory = $false)]
+        [System.Int32]$PollIntervalSeconds = 10
+    )
+
+    $startedAt = Get-Date
+    $deadline = $startedAt.AddSeconds($TimeoutSeconds)
+    $attempt = 0
+    $lastEvidence = $null
+
+    do {
+        $attempt++
+        $lastEvidence = Get-WingetWingmanInstalledPackageEvidence -PackageId $PackageId -PackageName $PackageName -PackageVersion $PackageVersion
+
+        if ($lastEvidence.QuerySucceeded -and -not $lastEvidence.Installed) {
+            return [PSCustomObject]@{
+                Status      = 'VerifiedAbsent'
+                Attempts    = $attempt
+                StartedAt   = $startedAt
+                CompletedAt = Get-Date
+                Evidence    = $lastEvidence
+            }
+        }
+
+        if ((Get-Date) -ge $deadline) {
+            break
+        }
+
+        Start-Sleep -Seconds $PollIntervalSeconds
+    }
+    while ($true)
+
+    return [PSCustomObject]@{
+        Status      = if ($lastEvidence -and $lastEvidence.QuerySucceeded) { 'StillInstalled' } else { 'Unverifiable' }
+        Attempts    = $attempt
+        StartedAt   = $startedAt
+        CompletedAt = Get-Date
+        Evidence    = $lastEvidence
+    }
+}
+
+function Get-WingetWingmanManagedPackageIds {
+    [CmdletBinding()]
+    param
+    (
+        [Parameter(Mandatory = $false)]
+        [System.String]$RegistryPath = 'HKLM:\SOFTWARE\WingetWingman'
+    )
+
+    $managedPackages = @()
+
+    try {
+        $packageInventoryRoot = Join-Path $RegistryPath 'Packages'
+        if (Test-Path -LiteralPath $packageInventoryRoot) {
+            $managedPackages += Get-ChildItem -LiteralPath $packageInventoryRoot -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty PSChildName
+        }
+
+        $legacyPackages = Get-ADTRegistryKey -Key $RegistryPath -ErrorAction SilentlyContinue
+        if ($legacyPackages) {
+            $managedPackages += $legacyPackages.PSObject.Properties | Where-Object {
+                $_.Name -notlike 'PS*' -and $_.Name -notlike '*_AutoUpdate' -and $_.Name -ne 'Packages'
+            } | Select-Object -ExpandProperty Name
+        }
+    }
+    catch {
+    }
+
+    return @($managedPackages | Where-Object { $_ } | Sort-Object -Unique)
+}
+
+function Get-WingetWingmanWAUWhitelistEntries {
+    [CmdletBinding()]
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [System.String]$Path
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return @()
+    }
+
+    return @(
+        Get-Content -LiteralPath $Path -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ } |
+            Sort-Object -Unique
+    )
+}
+
+function Set-WingetWingmanWAUWhitelistEntries {
+    [CmdletBinding()]
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [System.String]$Path,
+
+        [Parameter(Mandatory = $false)]
+        [System.String[]]$Entries = @()
+    )
+
+    $directoryPath = Split-Path -Path $Path -Parent
+    if (-not (Test-Path -LiteralPath $directoryPath)) {
+        New-Item -Path $directoryPath -ItemType Directory -Force | Out-Null
+    }
+
+    $tempPath = Join-Path $directoryPath ([System.IO.Path]::GetRandomFileName())
+    $normalizedEntries = @($Entries | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Sort-Object -Unique)
+    $utf8Bom = [System.Text.UTF8Encoding]::new($true)
+    $fileContents = if ($normalizedEntries.Count -gt 0) {
+        ($normalizedEntries -join [Environment]::NewLine) + [Environment]::NewLine
+    }
+    else {
+        [System.String]::Empty
+    }
+
+    try {
+        [System.IO.File]::WriteAllText($tempPath, $fileContents, $utf8Bom)
+        Move-Item -LiteralPath $tempPath -Destination $Path -Force
+        return $normalizedEntries
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempPath) {
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Sync-WingetWingmanWAUWhitelistEntry {
+    [CmdletBinding()]
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Add', 'Remove')]
+        [System.String]$Action,
+
+        [Parameter(Mandatory = $true)]
+        [System.String]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [System.String]$PackageId
+    )
+
+    $entries = Get-WingetWingmanWAUWhitelistEntries -Path $Path
+
+    switch ($Action) {
+        'Add' {
+            $entries = @($entries + $PackageId)
+        }
+        'Remove' {
+            $entries = @($entries | Where-Object { $_ -ne $PackageId })
+        }
+    }
+
+    return @(Set-WingetWingmanWAUWhitelistEntries -Path $Path -Entries $entries)
+}
+
+function Invoke-WingetWingmanSourceRefresh {
+    [CmdletBinding()]
+    param
+    (
+        [Parameter(Mandatory = $false)]
+        [System.String]$SourceName = 'winget',
+
+        [Parameter(Mandatory = $false)]
+        [System.Int32]$RetryCount = 3,
+
+        [Parameter(Mandatory = $false)]
+        [System.Int32]$RetryDelaySeconds = 5
+    )
+
+    $wingetPath = Get-ADTWinGetPath -ErrorAction Stop
+    $wingetFile = Get-Item -LiteralPath $wingetPath.FullName -ErrorAction Stop
+    $lastOutput = $null
+    $lastExitCode = $null
+    $attempt = 0
+
+    Write-ADTLogEntry -Message "Using WinGet at $($wingetFile.FullName) (version $($wingetFile.VersionInfo.FileVersion))." -Source $adtSession.DeployAppScriptFriendlyName
+
+    while ($attempt -lt $RetryCount) {
+        $attempt++
+        try {
+            $lastOutput = & $wingetFile.FullName source update --name $SourceName --disable-interactivity 2>&1
+            $lastExitCode = $LASTEXITCODE
+
+            if ($lastExitCode -eq 0) {
+                Write-ADTLogEntry -Message "WinGet source refresh succeeded for '$SourceName' on attempt $attempt." -Source $adtSession.DeployAppScriptFriendlyName
+                return [PSCustomObject]@{
+                    Success    = $true
+                    Attempt    = $attempt
+                    ExitCode   = $lastExitCode
+                    WingetPath = $wingetFile.FullName
+                    Output     = @($lastOutput)
+                }
+            }
+
+            $outputSummary = @($lastOutput) -join ' '
+            if ($outputSummary.Length -gt 400) {
+                $outputSummary = $outputSummary.Substring(0, 400)
+            }
+
+            Write-ADTLogEntry -Message "WinGet source refresh attempt $attempt failed with exit code $lastExitCode. Output: $outputSummary" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
+        }
+        catch {
+            Write-ADTLogEntry -Message "WinGet source refresh attempt $attempt threw an exception: $($_.Exception.Message)" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
+        }
+
+        if ($attempt -lt $RetryCount) {
+            Start-Sleep -Seconds $RetryDelaySeconds
+        }
+    }
+
+    return [PSCustomObject]@{
+        Success    = $false
+        Attempt    = $attempt
+        ExitCode   = $lastExitCode
+        WingetPath = $wingetFile.FullName
+        Output     = @($lastOutput)
+    }
+}
+
 function Install-ADTDeployment {
     [CmdletBinding()]
     param
@@ -172,18 +529,17 @@ function Install-ADTDeployment {
         }
     }
 
-    # Update WinGet source index - SYSTEM context has a separate, often stale source cache
     try {
-        Write-ADTLogEntry -Message "Updating WinGet source index..." -Source $adtSession.DeployAppScriptFriendlyName
-        $wingetExe = (Get-Item "$env:ProgramFiles\WindowsApps\Microsoft.DesktopAppInstaller_*_*__8wekyb3d8bbwe\winget.exe" | Sort-Object { [version]($_.VersionInfo.FileVersionRaw) })[-1].FullName
-        & $wingetExe source update --name winget 2>$null | Out-Null
-        Write-ADTLogEntry -Message "WinGet source index updated" -Source $adtSession.DeployAppScriptFriendlyName
+        Write-ADTLogEntry -Message "Refreshing WinGet source index..." -Source $adtSession.DeployAppScriptFriendlyName
+        $sourceRefresh = Invoke-WingetWingmanSourceRefresh
+        if (-not $sourceRefresh.Success) {
+            Write-ADTLogEntry -Message "Continuing without a confirmed source refresh. Package lookup may still fail if the SYSTEM source cache is stale." -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
+        }
     }
     catch {
-        Write-ADTLogEntry -Message "Could not update WinGet source index: $($_.Exception.Message)" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
+        Write-ADTLogEntry -Message "Could not refresh WinGet source index: $($_.Exception.Message)" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
     }
 
-    # Only check/install WAU if AutoUpdate flag is set
     if ($AutoUpdate) {
         Write-ADTLogEntry -Message "AutoUpdate flag enabled - checking for Winget-AutoUpdate (WAU)..." -Source $adtSession.DeployAppScriptFriendlyName
         $wauInstallPath = "$envProgramFiles\Winget-AutoUpdate"
@@ -289,7 +645,6 @@ function Install-ADTDeployment {
         PassThru = $true
     }
 
-    # Map deployment mode to WinGet mode
     if ($DeployMode -eq 'Silent') {
         $installParams.Mode = 'Silent'
     }
@@ -312,7 +667,6 @@ function Install-ADTDeployment {
         $installParams.AllowHashMismatch = $true
     }
 
-    # Enable installer logging if requested
     if ($EnableInstallerLogging) {
         $logDir = $adtSession.LogPath
         $sanitizedId = $wingetID -replace '[\\/:*?"<>|]', '_'
@@ -326,7 +680,6 @@ function Install-ADTDeployment {
 
     $installResult = Install-ADTWinGetPackage @installParams
 
-    # Validate installation result
     if ($installResult) {
         Write-ADTLogEntry -Message "Install result - Status: $($installResult.Status), InstallerErrorCode: $($installResult.InstallerErrorCode)" -Source $adtSession.DeployAppScriptFriendlyName
         if ($installResult.Status -ne 'Ok') {
@@ -340,8 +693,36 @@ function Install-ADTDeployment {
     $adtSession.InstallPhase = "Post-$($adtSession.DeploymentType)"
 	
     $registryPath = "HKLM:\SOFTWARE\WingetWingman"
+    $packageInventoryRoot = Join-Path $registryPath 'Packages'
+    $packageInventoryPath = Join-Path $packageInventoryRoot $wingetID
     Set-ADTRegistryKey -Key $registryPath -Name $wingetID -Value (Get-Date -Format "yyyy-MM-dd HH:mm:ss") -Type String
     Write-ADTLogEntry -Message "Registered $wingetID in Winget Wingman inventory" -Source $adtSession.DeployAppScriptFriendlyName
+
+    try {
+        $installedPackage = Get-ADTWinGetPackage -Id $wingetID -ErrorAction SilentlyContinue | Select-Object -First 1
+        $detectedVersion = if ($installedPackage -and $installedPackage.Version) {
+            $installedPackage.Version.Trim()
+        }
+        else {
+            $null
+        }
+
+        Set-ADTRegistryKey -Key $packageInventoryPath -Name 'PackageId' -Value $wingetID -Type String
+        Set-ADTRegistryKey -Key $packageInventoryPath -Name 'LastInstallDate' -Value (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') -Type String
+
+        if ($Version) {
+            Set-ADTRegistryKey -Key $packageInventoryPath -Name 'RequestedVersion' -Value $Version -Type String
+        }
+
+        if ($detectedVersion) {
+            Set-ADTRegistryKey -Key $packageInventoryPath -Name 'DetectedVersion' -Value $detectedVersion -Type String
+        }
+
+        Write-ADTLogEntry -Message "Updated detection metadata for $wingetID$(if ($detectedVersion) { ": Version $detectedVersion" })" -Source $adtSession.DeployAppScriptFriendlyName
+    }
+    catch {
+        Write-ADTLogEntry -Message "Could not update detection metadata for $wingetID: $($_.Exception.Message)" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
+    }
 
     if ($AutoUpdate) {
         Write-ADTLogEntry -Message "AutoUpdate flag enabled - adding $wingetID to WAU whitelist..." -Source $adtSession.DeployAppScriptFriendlyName
@@ -349,26 +730,16 @@ function Install-ADTDeployment {
         try {
             $wauInstallPath = "$envProgramFiles\Winget-AutoUpdate"
             $includedAppsFile = Join-Path $wauInstallPath "included_apps.txt"
-			
-            if (-not (Test-Path $includedAppsFile)) {
-                New-Item -Path $includedAppsFile -ItemType File -Force | Out-Null
-                Write-ADTLogEntry -Message "Created WAU included_apps.txt file" -Source $adtSession.DeployAppScriptFriendlyName
-            }
-			
-            $existingApps = @()
-            if (Test-Path $includedAppsFile) {
-                $existingApps = Get-Content $includedAppsFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() -ne "" }
-            }
-			
-            if ($wingetID -notin $existingApps) {
-                Add-Content -Path $includedAppsFile -Value $wingetID -Encoding UTF8
-                Write-ADTLogEntry -Message "Added $wingetID to WAU whitelist" -Source $adtSession.DeployAppScriptFriendlyName
-            }
-            else {
+
+            $previousApps = Get-WingetWingmanWAUWhitelistEntries -Path $includedAppsFile
+            $currentApps = Sync-WingetWingmanWAUWhitelistEntry -Action Add -Path $includedAppsFile -PackageId $wingetID
+            if ($wingetID -in $previousApps) {
                 Write-ADTLogEntry -Message "$wingetID already in WAU whitelist" -Source $adtSession.DeployAppScriptFriendlyName
             }
-			
-            $currentApps = Get-Content $includedAppsFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() -ne "" }
+            else {
+                Write-ADTLogEntry -Message "Added $wingetID to WAU whitelist" -Source $adtSession.DeployAppScriptFriendlyName
+            }
+
             Write-ADTLogEntry -Message "WAU whitelist now contains $($currentApps.Count) apps: $($currentApps -join ', ')" -Source $adtSession.DeployAppScriptFriendlyName
 			
             Write-ADTLogEntry -Message "Successfully configured $wingetID for WAU auto-update management" -Source $adtSession.DeployAppScriptFriendlyName
@@ -402,6 +773,19 @@ function Uninstall-ADTDeployment {
     ## MARK: Uninstall
     ##================================================
     $adtSession.InstallPhase = $adtSession.DeploymentType
+    $preUninstallPackage = @(Get-ADTWinGetPackage -Id $wingetID -ErrorAction SilentlyContinue) | Select-Object -First 1
+    $preUninstallPackageName = if ($preUninstallPackage -and $preUninstallPackage.Name) {
+        $preUninstallPackage.Name.Trim()
+    }
+    else {
+        $null
+    }
+    $preUninstallPackageVersion = if ($preUninstallPackage -and $preUninstallPackage.Version) {
+        $preUninstallPackage.Version.Trim()
+    }
+    else {
+        $null
+    }
     
     Write-ADTLogEntry -Message "Uninstalling application: $wingetID" -Source $adtSession.DeployAppScriptFriendlyName
 
@@ -413,7 +797,6 @@ function Uninstall-ADTDeployment {
         Repair-ADTWinGetPackageManager
     }
 
-    # Build uninstall parameters
     $uninstallParams = @{
         Id       = $wingetID
         Force    = $true
@@ -421,7 +804,6 @@ function Uninstall-ADTDeployment {
         PassThru = $true
     }
 
-    # Map deployment mode to WinGet mode
     if ($DeployMode -eq 'Silent') {
         $uninstallParams.Mode = 'Silent'
     }
@@ -429,7 +811,6 @@ function Uninstall-ADTDeployment {
         $uninstallParams.Mode = 'Interactive'
     }
 
-    # Enable installer logging if requested
     if ($EnableInstallerLogging) {
         $logDir = $adtSession.LogPath
         $sanitizedId = $wingetID -replace '[\\/:*?"<>|]', '_'
@@ -453,7 +834,6 @@ function Uninstall-ADTDeployment {
         }
     }
 
-    # Validate uninstall result
     if ($uninstallResult) {
         Write-ADTLogEntry -Message "Uninstall result - Status: $($uninstallResult.Status), InstallerErrorCode: $($uninstallResult.InstallerErrorCode)" -Source $adtSession.DeployAppScriptFriendlyName
         if ($uninstallResult.Status -ne 'Ok') {
@@ -461,13 +841,39 @@ function Uninstall-ADTDeployment {
         }
     }
 
-    # Additional verification in Silent mode (some packages report success but don't actually uninstall)
-    if ($DeployMode -eq "Silent") {
-        Start-Sleep -Seconds 60
-        $stillInstalled = Get-ADTWinGetPackage -Id $wingetID -ErrorAction SilentlyContinue
-        if ($stillInstalled) {
-            Write-ADTLogEntry -Message "The silent uninstall for $($stillInstalled.Name) did not complete successfully. Update the Intune uninstall command to use Interactive mode instead of Silent mode." -Source $adtSession.DeployAppScriptFriendlyName
-            throw "Uninstall reported success but package is still installed - manual intervention required"
+    $verificationResult = Wait-WingetWingmanPackageAbsent -PackageId $wingetID -PackageName $preUninstallPackageName -PackageVersion $preUninstallPackageVersion
+    $verificationDurationSeconds = [Math]::Round(($verificationResult.CompletedAt - $verificationResult.StartedAt).TotalSeconds)
+
+    switch ($verificationResult.Status) {
+        'VerifiedAbsent' {
+            Write-ADTLogEntry -Message "Verified removal of $wingetID after $($verificationResult.Attempts) checks over $verificationDurationSeconds seconds." -Source $adtSession.DeployAppScriptFriendlyName
+        }
+        'StillInstalled' {
+            $evidenceDetails = @()
+            if ($verificationResult.Evidence.ById) {
+                $evidenceDetails += 'still detected by package ID'
+            }
+            if ($verificationResult.Evidence.ByName) {
+                $evidenceDetails += 'still detected by package name/version'
+            }
+
+            if (-not $evidenceDetails) {
+                $evidenceDetails += 'still detected by WinGet queries'
+            }
+
+            Write-ADTLogEntry -Message "Uninstall verification failed for $wingetID after $verificationDurationSeconds seconds: $($evidenceDetails -join '; ')." -Severity 3 -Source $adtSession.DeployAppScriptFriendlyName
+            throw "Uninstall reported success but the package is still detected after verification polling."
+        }
+        default {
+            $queryErrors = if ($verificationResult.Evidence -and $verificationResult.Evidence.QueryErrors) {
+                $verificationResult.Evidence.QueryErrors -join '; '
+            }
+            else {
+                'WinGet queries did not return usable verification data.'
+            }
+
+            Write-ADTLogEntry -Message "Uninstall verification could not confirm removal of $wingetID after $verificationDurationSeconds seconds: $queryErrors" -Severity 3 -Source $adtSession.DeployAppScriptFriendlyName
+            throw "Uninstall reported success but package removal could not be verified."
         }
     }
 
@@ -480,23 +886,21 @@ function Uninstall-ADTDeployment {
 
     $registryPath = "HKLM:\SOFTWARE\WingetWingman"
     $wauInstallPath = "$envProgramFiles\Winget-AutoUpdate"
+    $packageInventoryPath = Join-Path (Join-Path $registryPath 'Packages') $wingetID
 
     Remove-ADTRegistryKey -Key $registryPath -Name $wingetID -ErrorAction SilentlyContinue
+    Remove-ADTRegistryKey -Key $packageInventoryPath -Recurse -ErrorAction SilentlyContinue
     Write-ADTLogEntry -Message "Removed $wingetID from Winget Wingman inventory" -Source $adtSession.DeployAppScriptFriendlyName
 
-    # Remove from WAU whitelist
     try {
         $includedAppsFile = Join-Path $wauInstallPath "included_apps.txt"
 
         if (Test-Path $includedAppsFile) {
-            $existingApps = Get-Content $includedAppsFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() -ne "" -and $_.Trim() -ne $wingetID }
-
-            if ($existingApps) {
-                Set-Content -Path $includedAppsFile -Value $existingApps -Encoding UTF8
+            $currentApps = Sync-WingetWingmanWAUWhitelistEntry -Action Remove -Path $includedAppsFile -PackageId $wingetID
+            if ($currentApps.Count -gt 0) {
                 Write-ADTLogEntry -Message "Removed $wingetID from WAU whitelist" -Source $adtSession.DeployAppScriptFriendlyName
             }
             else {
-                Set-Content -Path $includedAppsFile -Value "" -Encoding UTF8
                 Write-ADTLogEntry -Message "Removed $wingetID from WAU - whitelist is now empty" -Source $adtSession.DeployAppScriptFriendlyName
             }
         }
@@ -505,29 +909,17 @@ function Uninstall-ADTDeployment {
         Write-ADTLogEntry -Message "Could not update WAU whitelist: $($_.Exception.Message)" -Severity 2 -Source $adtSession.DeployAppScriptFriendlyName
     }
 
-    # Check if any apps remain managed by Winget Wingman
     try {
-        $remainingApps = Get-ADTRegistryKey -Key $registryPath -ErrorAction SilentlyContinue
+        $managedPackages = Get-WingetWingmanManagedPackageIds -RegistryPath $registryPath
+        $appCount = $managedPackages.Count
 
-        if ($remainingApps) {
-            $appProperties = $remainingApps.PSObject.Properties | Where-Object {
-                $_.Name -notlike "PS*" -and $_.Name -notlike "*_AutoUpdate"
-            }
-            $appCount = $appProperties.Count
-
-            if ($appCount -gt 0) {
-                Write-ADTLogEntry -Message "$appCount apps remaining managed by Winget Wingman: $($appProperties.Name -join ', ')" -Source $adtSession.DeployAppScriptFriendlyName
-            }
-            else {
-                $appCount = 0
-            }
+        if ($appCount -gt 0) {
+            Write-ADTLogEntry -Message "$appCount apps remaining managed by Winget Wingman: $($managedPackages -join ', ')" -Source $adtSession.DeployAppScriptFriendlyName
         }
         else {
-            $appCount = 0
             Write-ADTLogEntry -Message "No apps found in Winget Wingman registry" -Source $adtSession.DeployAppScriptFriendlyName
         }
 
-        # Complete cleanup if no apps remain
         if ($appCount -eq 0) {
             Write-ADTLogEntry -Message "No more apps managed by Winget Wingman - performing complete cleanup..." -Source $adtSession.DeployAppScriptFriendlyName
 
@@ -639,6 +1031,13 @@ try {
     $iadtParams = Get-ADTBoundParametersAndDefaultValues -Invocation $MyInvocation
     $adtSession = Remove-ADTHashtableNullOrEmptyValues -Hashtable $adtSession
     $adtSession = Open-ADTSession @adtSession @iadtParams -PassThru
+    $Script:WingetWingmanPrimaryLogPath = Resolve-WingetWingmanSessionLogPath -Session $adtSession
+
+    if (-not [System.String]::IsNullOrWhiteSpace($Script:WingetWingmanPrimaryLogPath)) {
+        $Script:WingetWingmanLegacyLogPath = Join-Path $Script:WingetWingmanLegacyLogDirectory (Split-Path -Path $Script:WingetWingmanPrimaryLogPath -Leaf)
+        Add-ADTModuleCallback -Hookpoint OnExit -Callback (Get-Command -Name Copy-WingetWingmanLegacyLog)
+        Write-ADTLogEntry -Message "PSADT log will be mirrored to legacy path: $Script:WingetWingmanLegacyLogPath" -Source $adtSession.DeployAppScriptFriendlyName
+    }
 }
 catch {
     $Host.UI.WriteErrorLine((Out-String -InputObject $_ -Width ([System.Int32]::MaxValue)))
